@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::ops::Deref;
 
 #[derive(Clone)]
-pub struct CustomSettings(pub Arc<sled::Tree>);
+pub struct CustomSettings(pub Arc<lmdb_zero::Database<'static>>);
 
 impl Deref for CustomSettings {
-    type Target = sled::Tree;
+    type Target = lmdb_zero::Database<'static>;
 
-    fn deref(&self) -> &sled::Tree {
+    fn deref(&self) -> &Self::Target {
         &self.0
     }
 }

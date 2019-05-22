@@ -180,6 +180,17 @@ impl Schema {
         name
     }
 
+    pub fn min_max_attr(&self) -> Option<(SchemaAttr, SchemaAttr)> {
+        // TODO create a better minmax that is not O(N * 2)
+        let min = self.inner.attrs.iter().min_by_key(|(_, attr)| attr.0);
+        let max = self.inner.attrs.iter().max_by_key(|(_, attr)| attr.0);
+
+        match (min, max) {
+            (Some((_, min)), Some((_, max))) => Some((*min, *max)),
+            _ => None,
+        }
+    }
+
     pub fn iter<'a>(&'a self) -> impl Iterator<Item=(&str, SchemaAttr, SchemaProps)> + 'a {
         self.inner.props.iter()
             .map(move |(name, prop)| {

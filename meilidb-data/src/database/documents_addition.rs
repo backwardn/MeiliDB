@@ -72,7 +72,7 @@ impl<'a> DocumentsAddition<'a> {
 
         // 2. insert new document attributes in the database
         for ((id, attr), value) in self.document_store.into_inner() {
-            documents.set_document_field(id, attr, value)?;
+            documents.set_document_field(id, attr, &value)?;
         }
 
         let indexed = self.indexer.build();
