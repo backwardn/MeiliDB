@@ -86,6 +86,34 @@ impl SchemaBuilder {
     }
 }
 
+struct OrderedTable {
+    into: Vec<u16>,
+    from: Vec<u16>,
+}
+
+impl OrderedTable {
+    fn new(max: u16) -> OrderedTable {
+        OrderedTable {
+            into: (0..=max).collect(),
+            from: (0..=max).collect(),
+        }
+    }
+
+    fn attr_into_ordered(&self, attr: u16) -> u16 {
+        let index = usize::from(attr);
+        self.into[index]
+    }
+
+    fn attr_from_ordered(&self, ordered: u16) -> u16 {
+        let index = usize::from(ordered);
+        self.from[index]
+    }
+
+    fn move_attr(&mut self, attr: u16, position: usize) {
+        unimplemented!()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     inner: Arc<InnerSchema>,
