@@ -1,6 +1,5 @@
 use std::ops::Range;
-use std::iter::FromIterator;
-use intervaltree::{IntervalTree, Element};
+use std::cmp::Ordering::{Less, Greater, Equal};
 
 /// Return `true` if the specified range can accept the given replacements words.
 /// Returns `false` if the replacements words are already present in the original query
@@ -34,7 +33,7 @@ use intervaltree::{IntervalTree, Element};
 //   /           \
 //  [new york city]
 //
-pub fn rewrite_range_with<S, T>(query: &[S], range: Range<usize>, words: &[T]) -> bool
+fn rewrite_range_with<S, T>(query: &[S], range: Range<usize>, words: &[T]) -> bool
 where S: AsRef<str>,
       T: AsRef<str>,
 {
@@ -51,6 +50,39 @@ where S: AsRef<str>,
     // check if the original query doesn't already contain
     // the replacement words
     !original.map(AsRef::as_ref).eq(words.iter().map(AsRef::as_ref))
+}
+
+struct FakeIntervalTree {
+    intervals: Vec<(Range<usize>, usize)>,
+}
+
+impl FakeIntervalTree {
+    fn new(mut intervals: Vec<(Range<usize>, usize)>) -> FakeIntervalTree {
+        intervals.sort_unstable_by_key(|(r, _)| (r.start, r.end));
+
+        fn ranges_overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+            a.contains(&b.start) || a.contains(&b.end)
+        }
+
+        debug_assert!(!intervals.windows(2).any(|s| ranges_overlaps(&s[0].0, &s[1].0)));
+
+        FakeIntervalTree { intervals }
+    }
+
+    fn query(&self, point: usize) -> Option<(Range<usize>, usize)> {
+        let element = self.intervals.binary_search_by(|(r, _)| {
+            if point >= r.start {
+                if point < r.end { Equal } else { Less }
+            } else { Greater }
+        });
+
+        let n = match element { Ok(n) => n, Err(n) => n };
+
+        match self.intervals.get(n) {
+            Some((range, value)) if range.contains(&point) => Some((range.clone(), *value)),
+            _otherwise => None,
+        }
+    }
 }
 
 pub struct QueryEnhancerBuilder<'a, S> {
@@ -99,29 +131,21 @@ impl<S: AsRef<str>> QueryEnhancerBuilder<'_, S> {
     pub fn build(self) -> QueryEnhancer {
         QueryEnhancer {
             origins: self.origins,
-            real_to_origin: IntervalTree::from_iter(self.real_to_origin),
+            real_to_origin: FakeIntervalTree::new(self.real_to_origin),
         }
     }
 }
 
 pub struct QueryEnhancer {
     origins: Vec<usize>,
-    // TODO the ranges do not overlap so it is possible
-    //      to replace this by a simpler type
-    real_to_origin: IntervalTree<usize, usize>,
+    real_to_origin: FakeIntervalTree,
 }
 
 impl QueryEnhancer {
     /// Returns the query indices to use to replace this real query index.
     pub fn replacement(&self, real: usize) -> Range<usize> {
-
-        // query the interval tree with the real query index
-        let mut iter = self.real_to_origin.query_point(real);
-        let element = iter.next().expect("real has never been declared");
-        debug_assert!(iter.next().is_none(), "there must not be another range containing a real");
-
-        let Element { range, value } = element.clone();
-        let origin = value;
+        // query the fake interval tree with the real query index
+        let (range, origin) = self.real_to_origin.query(real).expect("real has never been declared");
 
         // if `real` is the end bound of the range
         if range.end == real {
