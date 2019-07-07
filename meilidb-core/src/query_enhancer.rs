@@ -60,11 +60,16 @@ impl FakeIntervalTree {
     fn new(mut intervals: Vec<(Range<usize>, usize)>) -> FakeIntervalTree {
         intervals.sort_unstable_by_key(|(r, _)| (r.start, r.end));
 
-        fn ranges_overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
-            a.contains(&b.start) || a.contains(&b.end)
+        // this function checks if two following ranges
+        // touch themselves and do not not overlap
+        fn check_ranges(a: &Range<usize>, b: &Range<usize>) -> bool {
+            (a.contains(&b.start) || a.contains(&b.end)) || (a.end != b.start)
         }
 
-        debug_assert!(!intervals.windows(2).any(|s| ranges_overlaps(&s[0].0, &s[1].0)));
+        debug_assert!(
+            !intervals.windows(2).any(|s| check_ranges(&s[0].0, &s[1].0)),
+            "real ranges do not touch themselves or overlaps"
+        );
 
         FakeIntervalTree { intervals }
     }
