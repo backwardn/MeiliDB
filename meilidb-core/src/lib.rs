@@ -181,14 +181,15 @@ impl RawDocument {
 
 impl fmt::Debug for RawDocument {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("RawDocument")
-            .field("id", &self.id)
-            .field("query_index", &self.query_index())
-            .field("distance", &self.distance())
-            .field("attribute", &self.attribute())
-            .field("word_index", &self.word_index())
-            .field("is_exact", &self.is_exact())
-            .finish()
+        f.write_str("RawDocument {\r\n")?;
+        f.write_fmt(format_args!("{:>15}: {:?},\r\n",    "id",          self.id))?;
+        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "query_index", self.query_index()))?;
+        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "distance",    self.distance()))?;
+        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "attribute",   self.attribute()))?;
+        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "word_index",  self.word_index()))?;
+        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n", "is_exact",    self.is_exact()))?;
+        f.write_str("}")?;
+        Ok(())
     }
 }
 
