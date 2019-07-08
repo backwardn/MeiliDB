@@ -53,11 +53,11 @@ where S: AsRef<str>,
 }
 
 struct FakeIntervalTree {
-    intervals: Vec<(Range<usize>, usize)>,
+    intervals: Vec<(Range<usize>, (usize, usize))>, // origin, real_length
 }
 
 impl FakeIntervalTree {
-    fn new(mut intervals: Vec<(Range<usize>, usize)>) -> FakeIntervalTree {
+    fn new(mut intervals: Vec<(Range<usize>, (usize, usize))>) -> FakeIntervalTree {
         intervals.sort_unstable_by_key(|(r, _)| (r.start, r.end));
 
         // this function checks if two following ranges
@@ -66,15 +66,15 @@ impl FakeIntervalTree {
             (a.contains(&b.start) || a.contains(&b.end)) || (a.end != b.start)
         }
 
-        debug_assert!(
-            !intervals.windows(2).any(|s| check_ranges(&s[0].0, &s[1].0)),
-            "real ranges do not touch themselves or overlaps"
-        );
+        // debug_assert!(
+        //     !intervals.windows(2).any(|s| check_ranges(&s[0].0, &s[1].0)),
+        //     "real ranges do not touch themselves or overlaps"
+        // );
 
         FakeIntervalTree { intervals }
     }
 
-    fn query(&self, point: usize) -> Option<(Range<usize>, usize)> {
+    fn query(&self, point: usize) -> Option<(Range<usize>, (usize, usize))> {
         let element = self.intervals.binary_search_by(|(r, _)| {
             if point >= r.start {
                 if point < r.end { Equal } else { Less }
@@ -93,14 +93,14 @@ impl FakeIntervalTree {
 pub struct QueryEnhancerBuilder<'a, S> {
     query: &'a [S],
     origins: Vec<usize>,
-    real_to_origin: Vec<(Range<usize>, usize)>,
+    real_to_origin: Vec<(Range<usize>, (usize, usize))>,
 }
 
 impl<S: AsRef<str>> QueryEnhancerBuilder<'_, S> {
     pub fn new(query: &[S]) -> QueryEnhancerBuilder<S> {
         // we initialize origins query indices based on their positions
-        let origins: Vec<_> = (0..query.len()).collect();
-        let real_to_origin = origins.iter().map(|&o| (o..o+1, o)).collect();
+        let origins: Vec<_> = (0..query.len() + 1).collect();
+        let real_to_origin = origins.iter().map(|&o| (o..o+1, (o, 1))).collect();
 
         QueryEnhancerBuilder { query, origins, real_to_origin }
     }
@@ -119,18 +119,23 @@ impl<S: AsRef<str>> QueryEnhancerBuilder<'_, S> {
             // this range can be replaced so we need to
             // modify the origins accordingly
             let offset = replacement.len() - range.len();
-            for (o, r) in self.origins.iter_mut().enumerate().skip(range.end) {
-                // we add the offset but don't forget to remove
-                // the already possibly added offsets
-                *r += offset.saturating_sub(*r - o);
+
+            let previous_padding = self.origins[range.end - 1];
+            let current_offset = (self.origins[range.end] - 1) - previous_padding;
+            let diff = offset.saturating_sub(current_offset);
+            self.origins[range.end] += diff;
+
+            for r in &mut self.origins[range.end + 1..] {
+                *r += diff;
             }
         }
 
         // we need to store the real number and origins relations
         // this way it will be possible to know by how many
         // we need to pad real query indices
-        let real_range = real..real + replacement.len();
-        self.real_to_origin.push((real_range, range.start));
+        let real_range = real..real + replacement.len().max(range.len());
+        let real_length = replacement.len();
+        self.real_to_origin.push((real_range, (range.start, real_length)));
     }
 
     pub fn build(self) -> QueryEnhancer {
@@ -150,27 +155,29 @@ impl QueryEnhancer {
     /// Returns the query indices to use to replace this real query index.
     pub fn replacement(&self, real: usize) -> Range<usize> {
         // query the fake interval tree with the real query index
-        let (range, origin) = self.real_to_origin.query(real).expect("real has never been declared");
+        let (range, (origin, real_length)) = self.real_to_origin.query(real).expect("real has never been declared");
 
         // if `real` is the end bound of the range
-        if range.end == real {
-            // compute the padding and return the range with the padding
+        if (range.start + real_length - 1) == real {
+            let mut count = range.len();
+            let mut new_origin = origin;
+            for (i, slice) in self.origins[new_origin..].windows(2).enumerate() {
+                let len = slice[1] - slice[0];
+                count = count.saturating_sub(len);
+                if count == 0 { new_origin = origin + i; break }
+            }
+
             let n = real - range.start;
-            let padding = self.origins[origin] - origin;
-
-            debug_assert!(n <= range.end);
-            debug_assert!(padding <= range.len());
-            debug_assert!(n <= padding);
-
-            Range { start: origin + n, end: origin + padding + 1 }
+            let start = self.origins[origin];
+            let end = self.origins[new_origin + 1];
+            let remaining = (end - start) - n;
+            Range { start: start + n, end: start + n + remaining }
 
         } else {
             // just return the origin along with
             // the real position of the word
             let n = real - range.start;
             let origin = self.origins[origin];
-
-            debug_assert!(n <= range.end);
 
             Range { start: origin + n, end: origin + n + 1 }
         }
@@ -215,11 +222,54 @@ mod tests {
         let enhancer = builder.build();
 
         assert_eq!(enhancer.replacement(0), 0..1); // new
-        assert_eq!(enhancer.replacement(1), 1..2); // york
+        assert_eq!(enhancer.replacement(1), 1..3); // york
         assert_eq!(enhancer.replacement(2), 3..4); // subway
         assert_eq!(enhancer.replacement(3), 0..1); // new
         assert_eq!(enhancer.replacement(4), 1..2); // york
         assert_eq!(enhancer.replacement(5), 2..3); // city
+    }
+
+    #[test]
+    fn same_place_growings() {
+        let query = ["NY", "subway"];
+        //             0       1
+        let mut builder = QueryEnhancerBuilder::new(&query);
+
+        // NY = new york
+        builder.declare(0..1, 2, &["new", "york"]);
+        //                    ^      2       3
+
+        // NY = new york city
+        builder.declare(0..1, 4, &["new", "york", "city"]);
+        //                    ^      4       5       6
+
+        // NY = NYC
+        builder.declare(0..1, 7, &["NYC"]);
+        //                    ^      7
+
+        // NY = new york city
+        builder.declare(0..1, 8, &["new", "york", "city"]);
+        //                    ^      8       9      10
+
+        // subway = underground train
+        builder.declare(1..2, 11, &["underground", "train"]);
+        //                    ^          11          12
+
+        let enhancer = builder.build();
+
+        assert_eq!(enhancer.replacement(0), 0..3); // NY
+        assert_eq!(enhancer.replacement(1), 3..5); // subway
+        assert_eq!(enhancer.replacement(2), 0..1); // new
+        assert_eq!(enhancer.replacement(3), 1..3); // york
+        assert_eq!(enhancer.replacement(4), 0..1); // new
+        assert_eq!(enhancer.replacement(5), 1..2); // york
+        assert_eq!(enhancer.replacement(6), 2..3); // city
+        assert_eq!(enhancer.replacement(7), 0..3); // NYC
+        assert_eq!(enhancer.replacement(8), 0..1); // new
+        assert_eq!(enhancer.replacement(9), 1..2); // york
+        assert_eq!(enhancer.replacement(10), 2..3); // city
+        assert_eq!(enhancer.replacement(11), 3..4); // underground
+        assert_eq!(enhancer.replacement(12), 4..5); // train
     }
 
     #[test]
@@ -234,7 +284,7 @@ mod tests {
 
         let enhancer = builder.build();
 
-        assert_eq!(enhancer.replacement(0), 0..1); // NYC
+        assert_eq!(enhancer.replacement(0), 0..3); // NYC
         assert_eq!(enhancer.replacement(1), 3..4); // subway
         assert_eq!(enhancer.replacement(2), 0..1); // new
         assert_eq!(enhancer.replacement(3), 1..2); // york
@@ -255,11 +305,29 @@ mod tests {
 
         assert_eq!(enhancer.replacement(0), 0..1); // great
         assert_eq!(enhancer.replacement(1), 1..2); // awesome
-        assert_eq!(enhancer.replacement(2), 2..3); // NYC
+        assert_eq!(enhancer.replacement(2), 2..5); // NYC
         assert_eq!(enhancer.replacement(3), 5..6); // subway
         assert_eq!(enhancer.replacement(4), 2..3); // new
         assert_eq!(enhancer.replacement(5), 3..4); // york
         assert_eq!(enhancer.replacement(6), 4..5); // city
+    }
+
+    #[test]
+    fn end_query_growing() {
+        let query = ["NYC", "subway"];
+        //             0        1
+        let mut builder = QueryEnhancerBuilder::new(&query);
+
+        // NYC = new york city
+        builder.declare(1..2, 2, &["underground", "train"]);
+        //                    ^         2            3
+
+        let enhancer = builder.build();
+
+        assert_eq!(enhancer.replacement(0), 0..1); // NYC
+        assert_eq!(enhancer.replacement(1), 1..3); // subway
+        assert_eq!(enhancer.replacement(2), 1..2); // underground
+        assert_eq!(enhancer.replacement(3), 2..3); // train
     }
 
     #[test]
@@ -280,8 +348,8 @@ mod tests {
 
         assert_eq!(enhancer.replacement(0), 0..1); // great
         assert_eq!(enhancer.replacement(1), 1..2); // awesome
-        assert_eq!(enhancer.replacement(2), 2..3); // NYC
-        assert_eq!(enhancer.replacement(3), 5..6); // subway
+        assert_eq!(enhancer.replacement(2), 2..5); // NYC
+        assert_eq!(enhancer.replacement(3), 5..7); // subway
         assert_eq!(enhancer.replacement(4), 2..3); // new
         assert_eq!(enhancer.replacement(5), 3..4); // york
         assert_eq!(enhancer.replacement(6), 4..5); // city
@@ -311,18 +379,23 @@ mod tests {
         builder.declare(1..3, 10, &["NY"]);
         //                    ^^     10
 
+        // NYC subway = metro
+        builder.declare(2..4, 11, &["metro"]);
+        //                    ^^      11
+
         let enhancer = builder.build();
 
         assert_eq!(enhancer.replacement(0),  0..1); // great
         assert_eq!(enhancer.replacement(1),  1..2); // awesome
-        assert_eq!(enhancer.replacement(2),  2..3); // NYC
-        assert_eq!(enhancer.replacement(3),  5..6); // subway
+        assert_eq!(enhancer.replacement(2),  2..5); // NYC
+        assert_eq!(enhancer.replacement(3),  5..7); // subway
         assert_eq!(enhancer.replacement(4),  2..3); // new
         assert_eq!(enhancer.replacement(5),  3..4); // york
         assert_eq!(enhancer.replacement(6),  4..5); // city
         assert_eq!(enhancer.replacement(7),  5..6); // underground
         assert_eq!(enhancer.replacement(8),  6..7); // train
-        assert_eq!(enhancer.replacement(9),  0..1); // good
-        assert_eq!(enhancer.replacement(10), 1..2); // NY
+        assert_eq!(enhancer.replacement(9),  0..2); // good
+        assert_eq!(enhancer.replacement(10), 1..5); // NY
+        assert_eq!(enhancer.replacement(11), 2..5); // metro
     }
 }
