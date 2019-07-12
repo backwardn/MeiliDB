@@ -24,34 +24,30 @@ use crate::{TmpMatch, Highlight, DocumentId, Store, RawDocument, Document};
 const NGRAMS: usize = 3;
 
 struct Automaton {
-    query_index: usize,
     query_len: usize,
     is_exact: bool,
     dfa: DFA,
 }
 
 impl Automaton {
-    fn exact(query_index: usize, query: &str) -> Automaton {
+    fn exact(query: &str) -> Automaton {
         Automaton {
-            query_index,
             query_len: query.len(),
             is_exact: true,
             dfa: build_dfa(query),
         }
     }
 
-    fn prefix_exact(query_index: usize, query: &str) -> Automaton {
+    fn prefix_exact(query: &str) -> Automaton {
         Automaton {
-            query_index,
             query_len: query.len(),
             is_exact: true,
             dfa: build_prefix_dfa(query),
         }
     }
 
-    fn non_exact(query_index: usize, query: &str) -> Automaton {
+    fn non_exact(query: &str) -> Automaton {
         Automaton {
-            query_index,
             query_len: query.len(),
             is_exact: false,
             dfa: build_dfa(query),
@@ -102,16 +98,16 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
 
     // We must not declare the original words to the query enhancer
     // *but* we need to push them in the automatons list first
-    let mut original_words = query_words.iter().enumerate().peekable();
-    while let Some((query_index, word)) = original_words.next() {
+    let mut original_words = query_words.iter().peekable();
+    while let Some(word) = original_words.next() {
 
         let has_following_word = original_words.peek().is_some();
         let not_prefix_dfa = has_following_word || has_end_whitespace || word.chars().all(is_cjk);
 
         let automaton = if not_prefix_dfa {
-            Automaton::exact(query_index, word)
+            Automaton::exact(word)
         } else {
-            Automaton::prefix_exact(query_index, word)
+            Automaton::prefix_exact(word)
         };
         automatons.push(automaton);
     }
@@ -152,11 +148,11 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                         let real_query_index = automatons.len();
                         enhancer_builder.declare(query_range.clone(), real_query_index, &synonyms_words);
 
-                        for (i, synonym) in synonyms_words.into_iter().enumerate() {
+                        for synonym in synonyms_words {
                             let automaton = if nb_synonym_words == 1 {
-                                Automaton::exact(real_query_index + i, synonym)
+                                Automaton::exact(synonym)
                             } else {
-                                Automaton::non_exact(real_query_index + i, synonym)
+                                Automaton::non_exact(synonym)
                             };
                             automatons.push(automaton);
                         }
@@ -174,10 +170,10 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
 
                     // TODO must mark it as "phrase query"
                     //      (the next match must follow its query index)
-                    let automaton = Automaton::exact(real_query_index, left);
+                    let automaton = Automaton::exact(left);
                     automatons.push(automaton);
 
-                    let automaton = Automaton::exact(real_query_index + 1, right);
+                    let automaton = Automaton::exact(right);
                     automatons.push(automaton);
                 }
 
@@ -189,7 +185,7 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                 let real_query_index = automatons.len();
                 enhancer_builder.declare(query_range.clone(), real_query_index, &[&normalized]);
 
-                let automaton = Automaton::exact(real_query_index, &normalized);
+                let automaton = Automaton::exact(&normalized);
                 automatons.push(automaton);
             }
         }
@@ -275,7 +271,7 @@ where S: Store,
 
         while let Some((input, indexed_values)) = stream.next() {
             for iv in indexed_values {
-                let Automaton { query_index, is_exact, query_len, ref dfa } = automatons[iv.index];
+                let Automaton { is_exact, query_len, ref dfa } = automatons[iv.index];
                 let distance = dfa.eval(input).to_u8();
                 let is_exact = is_exact && distance == 0 && input.len() == query_len;
 
@@ -288,18 +284,22 @@ where S: Store,
                 for di in doc_indexes.as_slice() {
                     let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
                     if let Some(attribute) = attribute {
+
                         let match_ = TmpMatch {
-                            query_index: query_index as u32,
+                            query_index: iv.index as u32,
                             distance,
                             attribute,
                             word_index: di.word_index,
                             is_exact,
                         };
+
+                        // TODO do not store in the same matches vec
                         let highlight = Highlight {
                             attribute: di.attribute,
                             char_index: di.char_index,
                             char_length: di.char_length,
                         };
+
                         matches.push((di.document_id, match_, highlight));
                     }
                 }
