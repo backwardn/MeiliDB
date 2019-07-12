@@ -194,19 +194,6 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
     Ok((automatons, enhancer_builder.build()))
 }
 
-fn rewrite_matched_positions(matches: &mut [(DocumentId, TmpMatch, Highlight)]) {
-    for document_matches in matches.linear_group_by_mut(|(a, _, _), (b, _, _)| a == b) {
-        let mut offset = 0;
-        for query_indexes in document_matches.linear_group_by_mut(|(_, a, _), (_, b, _)| a.query_index == b.query_index) {
-            let word_index = query_indexes[0].1.word_index - offset as u16;
-            for (_, match_, _) in query_indexes.iter_mut() {
-                match_.word_index = word_index;
-            }
-            offset += query_indexes.len() - 1;
-        }
-    }
-}
-
 pub struct QueryBuilder<'c, S, FI = fn(DocumentId) -> bool> {
     store: S,
     criteria: Criteria<'c>,
@@ -306,16 +293,60 @@ where S: Store,
             }
         }
 
-        // rewrite the matched positions for next criteria evaluations
-        matches.par_sort_unstable();
-        rewrite_matched_positions(&mut matches);
+        // we sort the matches to make them rewritable
+        matches.par_sort_unstable_by_key(|(id, match_, _)| {
+            (*id, match_.attribute, match_.word_index) // query_id ???
+        });
 
-        let total_matches = matches.len();
-        let padded_matches = {
-            matches.par_sort_unstable();
-            matches.dedup();
-            SetBuf::new_unchecked(matches)
-        };
+        let mut padded_matches = Vec::with_capacity(matches.len());
+        for same_document in matches.linear_group_by(|a, b| a.0 == b.0) {
+
+            for same_attribute in same_document.linear_group_by(|a, b| a.1.attribute == b.1.attribute) {
+
+                let mut padding = 0;
+                let mut iter = same_attribute.linear_group_by(|a, b| a.1.word_index == b.1.word_index).peekable();
+                while let Some(same_word_index) = iter.next() {
+
+                    let mut biggest = 0;
+                    for (id, match_, highlight) in same_word_index {
+
+                        let replacement = query_enhancer.replacement(match_.query_index as usize);
+                        'padding: for (i, query_index) in replacement.enumerate() {
+                            let match_ = TmpMatch {
+                                query_index: query_index as u32,
+                                word_index: match_.word_index + padding as u16 + i as u16,
+                                ..match_.clone()
+                            };
+
+                            if i != 0 {
+                                // look ahead if there already is a match corresponding
+                                // to this padding words abort the padding if so
+                                if let Some(&next_group) = iter.peek() {
+                                    for (_, nmatch_, _) in next_group {
+                                        let mut replacement = query_enhancer.replacement(nmatch_.query_index as usize);
+                                        if let Some(query_index) = replacement.next() {
+                                            if match_.query_index == query_index as u32 {
+                                                break 'padding
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            biggest = biggest.max(i);
+                            padded_matches.push((*id, match_, *highlight));
+                        }
+                    }
+
+                    padding += biggest;
+                }
+            }
+        }
+
+        let total_matches = padded_matches.len();
+        padded_matches.par_sort_unstable();
+        let padded_matches = SetBuf::new_unchecked(padded_matches);
+
         let raw_documents = raw_documents_from_matches(padded_matches);
 
         info!("{} total documents to classify", raw_documents.len());

@@ -59,18 +59,6 @@ struct FakeIntervalTree {
 impl FakeIntervalTree {
     fn new(mut intervals: Vec<(Range<usize>, (usize, usize))>) -> FakeIntervalTree {
         intervals.sort_unstable_by_key(|(r, _)| (r.start, r.end));
-
-        // this function checks if two following ranges
-        // touch themselves and do not not overlap
-        fn check_ranges(a: &Range<usize>, b: &Range<usize>) -> bool {
-            (a.contains(&b.start) || a.contains(&b.end)) || (a.end != b.start)
-        }
-
-        // debug_assert!(
-        //     !intervals.windows(2).any(|s| check_ranges(&s[0].0, &s[1].0)),
-        //     "real ranges do not touch themselves or overlaps"
-        // );
-
         FakeIntervalTree { intervals }
     }
 
@@ -155,7 +143,10 @@ impl QueryEnhancer {
     /// Returns the query indices to use to replace this real query index.
     pub fn replacement(&self, real: usize) -> Range<usize> {
         // query the fake interval tree with the real query index
-        let (range, (origin, real_length)) = self.real_to_origin.query(real).expect("real has never been declared");
+        let (range, (origin, real_length)) =
+            self.real_to_origin
+            .query(real)
+            .expect("real has never been declared");
 
         // if `real` is the end bound of the range
         if (range.start + real_length - 1) == real {
@@ -171,6 +162,7 @@ impl QueryEnhancer {
             let start = self.origins[origin];
             let end = self.origins[new_origin + 1];
             let remaining = (end - start) - n;
+
             Range { start: start + n, end: start + n + remaining }
 
         } else {
