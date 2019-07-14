@@ -304,44 +304,84 @@ where S: Store,
             for same_attribute in same_document.linear_group_by(|a, b| a.1.attribute == b.1.attribute) {
 
                 let mut padding = 0;
-                let mut iter = same_attribute.linear_group_by(|a, b| a.1.word_index == b.1.word_index).peekable();
+                let mut iter = same_attribute.linear_group_by(|a, b| a.1.word_index == b.1.word_index);
                 while let Some(same_word_index) = iter.next() {
+
+                    println!("group: {:?}", same_word_index);
+                    println!("padding: {:?}", padding);
 
                     let mut biggest = 0;
                     for (id, match_, highlight) in same_word_index {
 
-                        let replacement = query_enhancer.replacement(match_.query_index as usize);
-                        'padding: for (i, query_index) in replacement.enumerate() {
+                        let mut replacement = query_enhancer.replacement(match_.query_index as usize);
+                        let replacement_len = replacement.len() - 1;
+                        let nexts = iter.remainder().linear_group_by(|a, b| a.1.word_index == b.1.word_index);
+
+                        if let Some(query_index) = replacement.next() {
                             let match_ = TmpMatch {
                                 query_index: query_index as u32,
-                                word_index: match_.word_index + padding as u16 + i as u16,
+                                word_index: match_.word_index + padding as u16,
+                                ..match_.clone()
+                            };
+                            println!("inserted match: {:?}", match_);
+                            padded_matches.push((*id, match_, *highlight));
+                        }
+
+                        let mut found = false;
+
+                        // look ahead and if there already is a match
+                        // corresponding to this padding word, abort the padding
+                        for (i, (query_index, next_group)) in replacement.clone().zip(nexts).enumerate() {
+                            let match_ = TmpMatch {
+                                query_index: query_index as u32,
+                                word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                 ..match_.clone()
                             };
 
-                            if i != 0 {
-                                // look ahead and if there already is a match
-                                // corresponding to this padding word, aborts the padding
-                                if let Some(&next_group) = iter.peek() {
-                                    for (_, nmatch_, _) in next_group {
-                                        let mut replacement = query_enhancer.replacement(nmatch_.query_index as usize);
-                                        if let Some(query_index) = replacement.next() {
-                                            if match_.query_index == query_index as u32 {
-                                                padded_matches.push((*id, match_, *highlight));
-                                                break 'padding
-                                            }
-                                        }
-                                    }
+                            println!("seen match: {:?}", match_);
+                            println!("next group: {:?}", next_group);
+
+                            let mut inner_found = false;
+                            for (_, nmatch_, _) in next_group {
+                                let mut replacement = query_enhancer.replacement(nmatch_.query_index as usize);
+                                let query_index = replacement.next().unwrap() as u32;
+                                let nmatch_ = TmpMatch { query_index, ..nmatch_.clone() };
+                                println!("i: {:?}, next: {:?}", i, nmatch_);
+                                if nmatch_.query_index == match_.query_index {
+                                    println!("found!!!");
+                                    padded_matches.push((*id, match_, *highlight));
+                                    inner_found = true;
+                                    found = true;
+                                    break;
                                 }
                             }
 
-                            biggest = biggest.max(i);
-                            padded_matches.push((*id, match_, *highlight));
+                            if !inner_found { break }
+                        }
+
+                        // if no padding was found in the following matches
+                        // we must insert the entire padding
+                        if !found {
+                            println!("no padding corresponding found, inserting the padding");
+                            for (i, query_index) in replacement.enumerate() {
+                                let match_ = TmpMatch {
+                                    query_index: query_index as u32,
+                                    word_index: match_.word_index + padding as u16 + (i + 1) as u16,
+                                    ..match_.clone()
+                                };
+                                println!("padding inserted: {:?}", match_);
+                                padded_matches.push((*id, match_, *highlight));
+                            }
+
+                            biggest = biggest.max(replacement_len);
                         }
                     }
 
                     padding += biggest;
                 }
             }
+
+            println!();
         }
 
         let total_matches = padded_matches.len();
@@ -1334,35 +1374,43 @@ mod tests {
         assert_matches!(iter.next(), None);
 
         let mut store = InMemorySetStore::from_iter(vec![
-            ("NY",    &[doc_index(0, 0)][..]),
-            ("city",  &[doc_index(0, 1)][..]),
+            ("NY",     &[doc_index(0, 0)][..]),
+            ("city",   &[doc_index(0, 1)][..]),
+            ("subway", &[doc_index(0, 2)][..]),
 
-            ("NY",    &[doc_index(1, 0)][..]),
+            ("NY",     &[doc_index(1, 0)][..]),
+            ("subway", &[doc_index(1, 1)][..]),
 
-            ("NY",    &[doc_index(2, 0)][..]),
-            ("york",  &[doc_index(2, 1)][..]),
-            ("city",  &[doc_index(2, 2)][..]),
+            ("NY",     &[doc_index(2, 0)][..]),
+            ("york",   &[doc_index(2, 1)][..]),
+            ("city",   &[doc_index(2, 2)][..]),
+            ("subway", &[doc_index(2, 3)][..]),
         ]);
 
-        store.add_synonym("NY", SetBuf::from_dirty(vec!["new york city"]));
+        store.add_synonym("NY", SetBuf::from_dirty(vec!["new york city story"]));
 
         let builder = QueryBuilder::new(&store);
-        let results = builder.query("NY ", 0..20).unwrap();
+        let results = builder.query("NY subway ", 0..20).unwrap();
         let mut iter = results.into_iter();
 
-        assert_matches!(iter.next(), Some(Document { id: DocumentId(0), matches, .. }) => {
-            let mut matches = matches.into_iter();
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 0, word_index: 0, is_exact: true,  .. })); // new
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true,  .. })); // york
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: false, .. })); // city
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true,  .. })); // city
-            assert_matches!(matches.next(), None);
-        });
         assert_matches!(iter.next(), Some(Document { id: DocumentId(1), matches, .. }) => {
             let mut matches = matches.into_iter();
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 0, word_index: 0, is_exact: true, .. })); // new
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true, .. })); // york
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true, .. })); // city
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 3, word_index: 3, is_exact: true, .. })); // story
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 4, is_exact: true, .. })); // subway
+            assert_matches!(matches.next(), None);
+        });
+        assert_matches!(iter.next(), Some(Document { id: DocumentId(0), matches, .. }) => {
+            let mut matches = matches.into_iter();
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 0, word_index: 0, is_exact: true,  .. })); // new
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true,  .. })); // york
+                                                                                                                    // city !!!
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true,  .. })); // city
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 4, is_exact: false, .. })); // city
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 3, word_index: 3, is_exact: true,  .. })); // story
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 5, is_exact: true,  .. })); // subway
             assert_matches!(matches.next(), None);
         });
         assert_matches!(iter.next(), Some(Document { id: DocumentId(2), matches, .. }) => {
@@ -1372,6 +1420,8 @@ mod tests {
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true,  .. })); // york
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: false, .. })); // city
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true,  .. })); // city
+                                                                                                                    // story !!!
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 3, is_exact: true,  .. })); // subway
             assert_matches!(matches.next(), None);
         });
         assert_matches!(iter.next(), None);
