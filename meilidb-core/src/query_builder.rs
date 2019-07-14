@@ -331,38 +331,61 @@ where S: Store,
 
                         // look ahead and if there already is a match
                         // corresponding to this padding word, abort the padding
-                        for (i, (query_index, next_group)) in replacement.clone().zip(nexts).enumerate() {
-                            let match_ = TmpMatch {
-                                query_index: query_index as u32,
-                                word_index: match_.word_index + padding as u16 + (i + 1) as u16,
-                                ..match_.clone()
-                            };
+                        'padding: for (x, next_group) in nexts.enumerate() {
 
-                            println!("seen match: {:?}", match_);
-                            println!("next group: {:?}", next_group);
+                            println!("next group: {} -> {:?}", x, next_group);
+                            println!("replacement {:?}", replacement);
 
-                            let mut inner_found = false;
-                            for (_, nmatch_, _) in next_group {
-                                let mut replacement = query_enhancer.replacement(nmatch_.query_index as usize);
-                                let query_index = replacement.next().unwrap() as u32;
-                                let nmatch_ = TmpMatch { query_index, ..nmatch_.clone() };
-                                println!("i: {:?}, next: {:?}", i, nmatch_);
-                                if nmatch_.query_index == match_.query_index {
-                                    println!("found!!!");
-                                    padded_matches.push((*id, match_, *highlight));
-                                    inner_found = true;
-                                    found = true;
-                                    break;
+                            for (i, query_index) in replacement.clone().enumerate().skip(x) {
+                                let padmatch_ = TmpMatch {
+                                    query_index: query_index as u32,
+                                    word_index: match_.word_index + padding as u16 + (i + 1) as u16,
+                                    ..match_.clone()
+                                };
+
+                                println!("padding generated match: {} -> {:?}", i, padmatch_);
+
+                                for (_, nmatch_, _) in next_group {
+                                    let mut rep = query_enhancer.replacement(nmatch_.query_index as usize);
+                                    let query_index = rep.next().unwrap() as u32;
+                                    let nmatch_ = TmpMatch { query_index, ..nmatch_.clone() };
+                                    println!("i: {:?}, next seen match: {:?}", i, nmatch_);
+                                    if nmatch_.query_index == padmatch_.query_index {
+
+                                        if !found {
+                                            println!("hello ! first time found padding. x: {}, i: {}", x, i);
+
+                                            // if we find a corresponding padding for the
+                                            // first time we must push preceding paddings
+                                            for (i, query_index) in replacement.clone().enumerate().take(i) {
+                                                let match_ = TmpMatch {
+                                                    query_index: query_index as u32,
+                                                    word_index: match_.word_index + padding as u16 + (i + 1) as u16,
+                                                    ..match_.clone()
+                                                };
+                                                println!("pushing previous: {:?}", match_);
+                                                padded_matches.push((*id, match_, *highlight));
+                                                biggest = biggest.max(i + 1);
+                                            }
+                                        }
+
+                                        println!("pushing: {:?}", padmatch_);
+                                        padded_matches.push((*id, padmatch_, *highlight));
+                                        found = true;
+                                        println!("found {} !!!", x + 1);
+                                        continue 'padding;
+                                    }
                                 }
                             }
 
-                            if !inner_found { break }
+                            // if we do not find a corresponding padding in the
+                            // next groups so stop here and pad what was found
+                            break
                         }
 
-                        // if no padding was found in the following matches
-                        // we must insert the entire padding
                         if !found {
-                            println!("no padding corresponding found, inserting the padding");
+                            // if no padding was found in the following matches
+                            // we must insert the entire padding
                             for (i, query_index) in replacement.enumerate() {
                                 let match_ = TmpMatch {
                                     query_index: query_index as u32,
@@ -1406,11 +1429,9 @@ mod tests {
             let mut matches = matches.into_iter();
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 0, word_index: 0, is_exact: true,  .. })); // new
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true,  .. })); // york
-                                                                                                                    // city !!!
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: false, .. })); // city
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true,  .. })); // city
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 4, is_exact: false, .. })); // city
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 3, word_index: 3, is_exact: true,  .. })); // story
-            assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 5, is_exact: true,  .. })); // subway
+            assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 3, is_exact: true,  .. })); // subway
             assert_matches!(matches.next(), None);
         });
         assert_matches!(iter.next(), Some(Document { id: DocumentId(2), matches, .. }) => {
@@ -1420,7 +1441,6 @@ mod tests {
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 1, word_index: 1, is_exact: true,  .. })); // york
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: false, .. })); // city
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 2, word_index: 2, is_exact: true,  .. })); // city
-                                                                                                                    // story !!!
             assert_matches!(matches.next(), Some(TmpMatch { query_index: 4, word_index: 3, is_exact: true,  .. })); // subway
             assert_matches!(matches.next(), None);
         });
