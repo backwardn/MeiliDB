@@ -307,9 +307,6 @@ where S: Store,
                 let mut iter = same_attribute.linear_group_by(|a, b| a.1.word_index == b.1.word_index);
                 while let Some(same_word_index) = iter.next() {
 
-                    println!("group: {:?}", same_word_index);
-                    println!("padding: {:?}", padding);
-
                     let mut biggest = 0;
                     for (id, match_, highlight) in same_word_index {
 
@@ -323,7 +320,6 @@ where S: Store,
                                 word_index: match_.word_index + padding as u16,
                                 ..match_.clone()
                             };
-                            println!("inserted match: {:?}", match_);
                             padded_matches.push((*id, match_, *highlight));
                         }
 
@@ -333,9 +329,6 @@ where S: Store,
                         // corresponding to this padding word, abort the padding
                         'padding: for (x, next_group) in nexts.enumerate() {
 
-                            println!("next group: {} -> {:?}", x, next_group);
-                            println!("replacement {:?}", replacement);
-
                             for (i, query_index) in replacement.clone().enumerate().skip(x) {
                                 let padmatch_ = TmpMatch {
                                     query_index: query_index as u32,
@@ -343,18 +336,13 @@ where S: Store,
                                     ..match_.clone()
                                 };
 
-                                println!("padding generated match: {} -> {:?}", i, padmatch_);
-
                                 for (_, nmatch_, _) in next_group {
                                     let mut rep = query_enhancer.replacement(nmatch_.query_index as usize);
                                     let query_index = rep.next().unwrap() as u32;
                                     let nmatch_ = TmpMatch { query_index, ..nmatch_.clone() };
-                                    println!("i: {:?}, next seen match: {:?}", i, nmatch_);
                                     if nmatch_.query_index == padmatch_.query_index {
 
                                         if !found {
-                                            println!("hello ! first time found padding. x: {}, i: {}", x, i);
-
                                             // if we find a corresponding padding for the
                                             // first time we must push preceding paddings
                                             for (i, query_index) in replacement.clone().enumerate().take(i) {
@@ -363,16 +351,13 @@ where S: Store,
                                                     word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                                     ..match_.clone()
                                                 };
-                                                println!("pushing previous: {:?}", match_);
                                                 padded_matches.push((*id, match_, *highlight));
                                                 biggest = biggest.max(i + 1);
                                             }
                                         }
 
-                                        println!("pushing: {:?}", padmatch_);
                                         padded_matches.push((*id, padmatch_, *highlight));
                                         found = true;
-                                        println!("found {} !!!", x + 1);
                                         continue 'padding;
                                     }
                                 }
@@ -392,7 +377,6 @@ where S: Store,
                                     word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                     ..match_.clone()
                                 };
-                                println!("padding inserted: {:?}", match_);
                                 padded_matches.push((*id, match_, *highlight));
                             }
 
@@ -404,7 +388,6 @@ where S: Store,
                 }
             }
 
-            println!();
         }
 
         let total_matches = padded_matches.len();
