@@ -269,13 +269,13 @@ where S: Store,
                     let mut biggest = 0;
                     for (id, match_) in same_word_index {
 
-                        let mut replacement = query_enhancer.replacement(match_.query_index as usize);
+                        let mut replacement = query_enhancer.replacement(match_.query_index);
                         let replacement_len = replacement.len() - 1;
                         let nexts = iter.remainder().linear_group_by(|a, b| a.1.word_index == b.1.word_index);
 
                         if let Some(query_index) = replacement.next() {
                             let match_ = TmpMatch {
-                                query_index: query_index as u32,
+                                query_index,
                                 word_index: match_.word_index + padding as u16,
                                 ..match_.clone()
                             };
@@ -290,14 +290,14 @@ where S: Store,
 
                             for (i, query_index) in replacement.clone().enumerate().skip(x) {
                                 let padmatch_ = TmpMatch {
-                                    query_index: query_index as u32,
+                                    query_index,
                                     word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                     ..match_.clone()
                                 };
 
                                 for (_, nmatch_) in next_group {
-                                    let mut rep = query_enhancer.replacement(nmatch_.query_index as usize);
-                                    let query_index = rep.next().unwrap() as u32;
+                                    let mut rep = query_enhancer.replacement(nmatch_.query_index);
+                                    let query_index = rep.next().unwrap();
                                     let nmatch_ = TmpMatch { query_index, ..nmatch_.clone() };
                                     if nmatch_.query_index == padmatch_.query_index {
 
@@ -306,7 +306,7 @@ where S: Store,
                                             // first time we must push preceding paddings
                                             for (i, query_index) in replacement.clone().enumerate().take(i) {
                                                 let match_ = TmpMatch {
-                                                    query_index: query_index as u32,
+                                                    query_index,
                                                     word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                                     ..match_.clone()
                                                 };
@@ -332,7 +332,7 @@ where S: Store,
                             // we must insert the entire padding
                             for (i, query_index) in replacement.enumerate() {
                                 let match_ = TmpMatch {
-                                    query_index: query_index as u32,
+                                    query_index,
                                     word_index: match_.word_index + padding as u16 + (i + 1) as u16,
                                     ..match_.clone()
                                 };

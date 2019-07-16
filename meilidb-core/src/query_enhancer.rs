@@ -141,7 +141,9 @@ pub struct QueryEnhancer {
 
 impl QueryEnhancer {
     /// Returns the query indices to use to replace this real query index.
-    pub fn replacement(&self, real: usize) -> Range<usize> {
+    pub fn replacement(&self, real: u32) -> Range<u32> {
+        let real = real as usize;
+
         // query the fake interval tree with the real query index
         let (range, (origin, real_length)) =
             self.real_to_origin
@@ -163,15 +165,15 @@ impl QueryEnhancer {
             let end = self.origins[new_origin + 1];
             let remaining = (end - start) - n;
 
-            Range { start: start + n, end: start + n + remaining }
+            Range { start: (start + n) as u32, end: (start + n + remaining) as u32 }
 
         } else {
             // just return the origin along with
             // the real position of the word
-            let n = real - range.start;
+            let n = real as usize - range.start;
             let origin = self.origins[origin];
 
-            Range { start: origin + n, end: origin + n + 1 }
+            Range { start: (origin + n) as u32, end: (origin + n + 1) as u32 }
         }
     }
 }
