@@ -26,7 +26,12 @@ rev = "40b3d48"
 [dependencies.fst]
 git = "https://github.com/Kerollmops/fst.git"
 branch = "arc-byte-slice"
+default-features = false
 
 [dev-dependencies]
 tempfile = "3.0.7"
 serde_json = "1.0.39"
+
+[features]
+default = ["mmap"]
+mmap = ["fst/mmap"]
