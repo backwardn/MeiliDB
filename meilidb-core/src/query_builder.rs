@@ -1,7 +1,6 @@
 use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Instant;
 use std::{cmp, mem};
 
 use fst::{Streamer, IntoStreamer};
@@ -317,9 +316,7 @@ where S: Store,
             return builder.query(query, range);
         }
 
-        let start = Instant::now();
         let mut documents = self.query_all(query)?;
-        info!("query_all took {:.2?}", start.elapsed());
 
         let mut groups = vec![documents.as_mut_slice()];
 
@@ -336,9 +333,7 @@ where S: Store,
                     continue;
                 }
 
-                let start = Instant::now();
                 group.par_sort_unstable_by(|a, b| criterion.evaluate(a, b));
-                info!("criterion {} sort took {:.2?}", criterion.name(), start.elapsed());
 
                 for group in group.binary_group_by_mut(|a, b| criterion.eq(a, b)) {
                     info!("criterion {} produced a group of size {}", criterion.name(), group.len());
@@ -389,9 +384,7 @@ where S: Store,
       K: Hash + Eq,
 {
     pub fn query(self, query: &str, range: Range<usize>) -> Result<Vec<Document>, S::Error> {
-        let start = Instant::now();
         let mut documents = self.inner.query_all(query)?;
-        info!("query_all took {:.2?}", start.elapsed());
 
         let mut groups = vec![documents.as_mut_slice()];
         let mut key_cache = HashMap::new();
@@ -417,9 +410,7 @@ where S: Store,
                     continue;
                 }
 
-                let start = Instant::now();
                 group.par_sort_unstable_by(|a, b| criterion.evaluate(a, b));
-                info!("criterion {} sort took {:.2?}", criterion.name(), start.elapsed());
 
                 for group in group.binary_group_by_mut(|a, b| criterion.eq(a, b)) {
                     // we must compute the real distinguished len of this sub-group
