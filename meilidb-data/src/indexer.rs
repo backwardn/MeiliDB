@@ -15,6 +15,7 @@ pub struct Indexer {
     docs_words: HashMap<DocumentId, Vec<Word>>,
 }
 
+#[derive(Debug)]
 pub struct Indexed {
     pub words_doc_indexes: BTreeMap<Word, SetBuf<DocIndex>>,
     pub docs_words: HashMap<DocumentId, fst::Set>,
