@@ -3,11 +3,11 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 use std::collections::btree_map::{BTreeMap, Entry};
 use std::collections::{HashMap, HashSet};
-use std::iter::FromIterator;
-use std::io::{self, Write};
-use std::time::{Instant, Duration};
-use std::path::PathBuf;
 use std::error::Error;
+use std::io::{self, Write};
+use std::iter::FromIterator;
+use std::path::PathBuf;
+use std::time::{Instant, Duration};
 
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use structopt::StructOpt;
@@ -151,12 +151,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fields = opt.displayed_fields.iter().map(String::as_str);
     let fields = HashSet::from_iter(fields);
 
+    let mut last_query: Option<String> = None;
+
     loop {
         print!("Searching for: ");
         io::stdout().flush()?;
 
+        buffer.clear();
         if input.read_line(&mut buffer)? == 0 { break }
         let query = buffer.trim_end_matches('\n');
+
+        let query = match (query, &last_query) {
+            ("", Some(last_query)) => last_query.as_str(),
+            ("", None)             => continue,
+            (query, _)             => {
+                last_query = Some(query.to_string());
+                query
+            },
+        };
 
         let start_total = Instant::now();
 
@@ -208,7 +220,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         eprintln!("document field retrieve took {:.2?}", retrieve_duration);
         eprintln!("===== Found {} results in {:.2?} =====", number_of_documents, start_total.elapsed());
-        buffer.clear();
     }
 
     Ok(())
