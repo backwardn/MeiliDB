@@ -11,8 +11,9 @@ use std::time::{Instant, Duration};
 
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use structopt::StructOpt;
-use meilidb_core::Highlight;
+use rustyline::{Editor, Config};
 
+use meilidb_core::Highlight;
 use meilidb_data::Database;
 use meilidb_schema::SchemaAttr;
 
@@ -140,9 +141,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     let database = Database::start_default(&opt.database_path)?;
 
-    let mut buffer = String::new();
-    let input = io::stdin();
-
     let index = database.open_index("test")?.unwrap();
     let schema = index.schema();
 
@@ -151,76 +149,71 @@ fn main() -> Result<(), Box<dyn Error>> {
     let fields = opt.displayed_fields.iter().map(String::as_str);
     let fields = HashSet::from_iter(fields);
 
-    let mut last_query: Option<String> = None;
+    let config = Config::builder().auto_add_history(true).build();
+    let mut readline = Editor::<()>::with_config(config);
+    let _ = readline.load_history("query-history.txt");
 
-    loop {
-        print!("Searching for: ");
-        io::stdout().flush()?;
+    for result in readline.iter("Searching for: ") {
+        match result {
+            Ok(query) => {
+                let start_total = Instant::now();
 
-        buffer.clear();
-        if input.read_line(&mut buffer)? == 0 { break }
-        let query = buffer.trim_end_matches('\n');
+                let builder = index.query_builder();
+                let documents = builder.query(&query, 0..opt.number_results)?;
 
-        let query = match (query, &last_query) {
-            ("", Some(last_query)) => last_query.as_str(),
-            ("", None)             => continue,
-            (query, _)             => {
-                last_query = Some(query.to_string());
-                query
-            },
-        };
+                let mut retrieve_duration = Duration::default();
 
-        let start_total = Instant::now();
+                let number_of_documents = documents.len();
+                for mut doc in documents {
 
-        let builder = index.query_builder();
-        let documents = builder.query(query, 0..opt.number_results)?;
+                    doc.highlights.sort_unstable_by_key(|m| (m.char_index, m.char_length));
 
-        let mut retrieve_duration = Duration::default();
+                    let start_retrieve = Instant::now();
+                    let result = index.document::<Document>(Some(&fields), doc.id);
+                    retrieve_duration += start_retrieve.elapsed();
 
-        let number_of_documents = documents.len();
-        for mut doc in documents {
+                    match result {
+                        Ok(Some(document)) => {
+                            for (name, text) in document {
+                                print!("{}: ", name);
 
-            doc.highlights.sort_unstable_by_key(|m| (m.char_index, m.char_length));
-
-            let start_retrieve = Instant::now();
-            let result = index.document::<Document>(Some(&fields), doc.id);
-            retrieve_duration += start_retrieve.elapsed();
-
-            match result {
-                Ok(Some(document)) => {
-                    for (name, text) in document {
-                        print!("{}: ", name);
-
-                        let attr = schema.attribute(&name).unwrap();
-                        let highlights = doc.highlights.iter()
-                                        .filter(|m| SchemaAttr::new(m.attribute) == attr)
-                                        .cloned();
-                        let (text, highlights) = crop_text(&text, highlights, opt.char_context);
-                        let areas = create_highlight_areas(&text, &highlights);
-                        display_highlights(&text, &areas)?;
-                        println!();
+                                let attr = schema.attribute(&name).unwrap();
+                                let highlights = doc.highlights.iter()
+                                                .filter(|m| SchemaAttr::new(m.attribute) == attr)
+                                                .cloned();
+                                let (text, highlights) = crop_text(&text, highlights, opt.char_context);
+                                let areas = create_highlight_areas(&text, &highlights);
+                                display_highlights(&text, &areas)?;
+                                println!();
+                            }
+                        },
+                        Ok(None) => eprintln!("missing document"),
+                        Err(e) => eprintln!("{}", e),
                     }
-                },
-                Ok(None) => eprintln!("missing document"),
-                Err(e) => eprintln!("{}", e),
+
+                    let mut matching_attributes = HashSet::new();
+                    for highlight in doc.highlights {
+                        let attr = SchemaAttr::new(highlight.attribute);
+                        let name = schema.attribute_name(attr);
+                        matching_attributes.insert(name);
+                    }
+
+                    let matching_attributes = Vec::from_iter(matching_attributes);
+                    println!("matching in: {:?}", matching_attributes);
+
+                    println!();
+                }
+
+                eprintln!("document field retrieve took {:.2?}", retrieve_duration);
+                eprintln!("===== Found {} results in {:.2?} =====", number_of_documents, start_total.elapsed());
+            },
+            Err(err) => {
+                println!("Error: {:?}", err);
+                break
             }
-
-            let mut matching_attributes = HashSet::new();
-            for highlight in doc.highlights {
-                let attr = SchemaAttr::new(highlight.attribute);
-                let name = schema.attribute_name(attr);
-                matching_attributes.insert(name);
-            }
-
-            let matching_attributes = Vec::from_iter(matching_attributes);
-            println!("matching in: {:?}", matching_attributes);
-
-            println!();
         }
-
-        eprintln!("document field retrieve took {:.2?}", retrieve_duration);
-        eprintln!("===== Found {} results in {:.2?} =====", number_of_documents, start_total.elapsed());
     }
 
+    readline.save_history("query-history.txt").unwrap();
     Ok(())
 }
