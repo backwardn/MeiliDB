@@ -26,3 +26,7 @@ structopt = "0.2.15"
 sysinfo = "0.8.4"
 tempfile = "3.0.7"
 termcolor = "1.0.4"
+
+[dev-dependencies.fst]
+git = "https://github.com/Kerollmops/fst.git"
+branch = "arc-byte-slice"

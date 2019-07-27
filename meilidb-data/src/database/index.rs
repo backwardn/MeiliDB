@@ -93,6 +93,10 @@ impl Index {
         self.0.lease()
     }
 
+    pub fn index_lease(&self) -> IndexLease {
+        IndexLease(self.0.lease())
+    }
+
     pub fn schema(&self) -> Schema {
         self.0.lease().schema.clone()
     }
