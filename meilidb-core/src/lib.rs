@@ -101,7 +101,7 @@ pub struct Document {
 impl Document {
     #[cfg(not(test))]
     fn from_raw(raw: RawDocument) -> Document {
-        Document { id: raw.id, highlights: raw.highlights }
+        Document { id: raw.id, highlights: raw.highlights.to_vec() }
     }
 
     #[cfg(test)]
@@ -126,7 +126,7 @@ impl Document {
             matches.push(match_);
         }
 
-        Document { id: raw.id, matches, highlights: raw.highlights }
+        Document { id: raw.id, matches, highlights: raw.highlights.to_vec() }
     }
 }
 

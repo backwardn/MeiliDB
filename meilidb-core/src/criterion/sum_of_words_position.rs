@@ -20,6 +20,10 @@ fn sum_matches_attribute_index(query_index: &[u32], word_index: &[u16]) -> usize
 pub struct SumOfWordsPosition;
 
 impl Criterion for SumOfWordsPosition {
+    fn prepare(&self, document: &mut RawDocument) {
+        // unimplemented!()
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

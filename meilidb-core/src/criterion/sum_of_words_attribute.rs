@@ -20,6 +20,10 @@ fn sum_matches_attributes(query_index: &[u32], attribute: &[u16]) -> usize {
 pub struct SumOfWordsAttribute;
 
 impl Criterion for SumOfWordsAttribute {
+    fn prepare(&self, document: &mut RawDocument) {
+        // unimplemented!()
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

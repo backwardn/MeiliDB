@@ -79,6 +79,10 @@ fn matches_proximity(
 pub struct WordsProximity;
 
 impl Criterion for WordsProximity {
+    fn prepare(&self, document: &mut RawDocument) {
+        // unimplemented!()
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

@@ -3,6 +3,7 @@ use std::cmp::Ordering;
 use slice_group_by::GroupBy;
 
 use crate::criterion::Criterion;
+use crate::raw_document::{apply_permutations, permutations_unstable_by_key};
 use crate::RawDocument;
 
 // This function is a wrong logarithmic 10 function.
@@ -38,6 +39,22 @@ fn sum_matches_typos(query_index: &[u32], distance: &[u8]) -> usize {
 pub struct SumOfTypos;
 
 impl Criterion for SumOfTypos {
+    fn prepare(&self, document: &mut RawDocument) {
+        let len = document.query_index().len();
+        let permutations = permutations_unstable_by_key(len, |i| unsafe {
+            (
+                document.query_index().get_unchecked(i),
+                document.distance().get_unchecked(i)
+            )
+        });
+
+        apply_permutations(&permutations, &mut document.query_index);
+        apply_permutations(&permutations, &mut document.distance);
+        apply_permutations(&permutations, &mut document.attribute);
+        apply_permutations(&permutations, &mut document.word_index);
+        apply_permutations(&permutations, &mut document.is_exact);
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

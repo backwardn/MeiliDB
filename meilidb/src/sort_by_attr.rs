@@ -86,6 +86,10 @@ impl<'a> SortByAttr<'a> {
 }
 
 impl<'a> Criterion for SortByAttr<'a> {
+    fn prepare(&self, _document: &mut RawDocument) {
+        // nothing to prepare...
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = self.ranked_map.get(lhs.id, self.attr);
         let rhs = self.ranked_map.get(rhs.id, self.attr);

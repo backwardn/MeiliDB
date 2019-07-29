@@ -1,141 +1,133 @@
-use std::sync::Arc;
 use std::fmt;
+use std::iter::FromIterator;
+use std::sync::Arc;
+use std::time::Instant;
+
+use log::info;
+use rayon::slice::ParallelSliceMut;
 use sdset::SetBuf;
 use slice_group_by::GroupBy;
+
 use crate::{TmpMatch, DocumentId, Highlight};
 
-#[derive(Clone)]
+pub type SmallVec32<T> = smallvec::SmallVec<[T; 32]>;
+
+#[derive(Debug, Clone)]
 pub struct RawDocument {
     pub id: DocumentId,
-    pub matches: SharedMatches,
-    pub highlights: Vec<Highlight>,
+
+    pub query_index: SmallVec32<u32>,
+    pub distance: SmallVec32<u8>,
+    pub attribute: SmallVec32<u16>,
+    pub word_index: SmallVec32<u16>,
+    pub is_exact: SmallVec32<bool>,
+
+    pub highlights: SmallVec32<Highlight>,
 }
 
 impl RawDocument {
-    fn new(id: DocumentId, matches: SharedMatches, highlights: Vec<Highlight>) -> RawDocument {
-        RawDocument { id, matches, highlights }
-    }
-
     pub fn query_index(&self) -> &[u32] {
-        let r = self.matches.range;
-        // it is safe because construction/modifications
-        // can only be done in this module
-        unsafe { &self.matches.matches.query_index.get_unchecked(r.start..r.end) }
+        &self.query_index
     }
 
     pub fn distance(&self) -> &[u8] {
-        let r = self.matches.range;
-        // it is safe because construction/modifications
-        // can only be done in this module
-        unsafe { &self.matches.matches.distance.get_unchecked(r.start..r.end) }
+        &self.distance
     }
 
     pub fn attribute(&self) -> &[u16] {
-        let r = self.matches.range;
-        // it is safe because construction/modifications
-        // can only be done in this module
-        unsafe { &self.matches.matches.attribute.get_unchecked(r.start..r.end) }
+        &self.attribute
     }
 
     pub fn word_index(&self) -> &[u16] {
-        let r = self.matches.range;
-        // it is safe because construction/modifications
-        // can only be done in this module
-        unsafe { &self.matches.matches.word_index.get_unchecked(r.start..r.end) }
+        &self.word_index
     }
 
     pub fn is_exact(&self) -> &[bool] {
-        let r = self.matches.range;
-        // it is safe because construction/modifications
-        // can only be done in this module
-        unsafe { &self.matches.matches.is_exact.get_unchecked(r.start..r.end) }
-    }
-}
-
-impl fmt::Debug for RawDocument {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("RawDocument {\r\n")?;
-        f.write_fmt(format_args!("{:>15}: {:?},\r\n",    "id",          self.id))?;
-        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "query_index", self.query_index()))?;
-        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "distance",    self.distance()))?;
-        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "attribute",   self.attribute()))?;
-        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n",  "word_index",  self.word_index()))?;
-        f.write_fmt(format_args!("{:>15}: {:^5?},\r\n", "is_exact",    self.is_exact()))?;
-        f.write_str("}")?;
-        Ok(())
+        &self.is_exact
     }
 }
 
 pub fn raw_documents_from(
-    matches: SetBuf<(DocumentId, TmpMatch)>,
-    highlights: SetBuf<(DocumentId, Highlight)>,
+    mut matches: Vec<(DocumentId, TmpMatch)>,
+    mut highlights: Vec<(DocumentId, Highlight)>,
 ) -> Vec<RawDocument>
 {
-    let mut docs_ranges: Vec<(_, Range, _)> = Vec::new();
-    let mut matches2 = Matches::with_capacity(matches.len());
+    let start = Instant::now();
+    matches.par_sort_unstable_by_key(|(id, _)| *id);
+    info!("sorting matches took {:.2?}", start.elapsed());
+
+    let start = Instant::now();
+    highlights.par_sort_unstable_by_key(|(id, _)| *id);
+    info!("sorting highlights took {:.2?}", start.elapsed());
+
+    // TODO check if using highlights is faster (there are fewer)
+    let number_of_documents = matches.linear_group_by_key(|(id, _)| *id).count();
+    let mut documents = Vec::with_capacity(number_of_documents);
 
     let matches = matches.linear_group_by_key(|(id, _)| *id);
     let highlights = highlights.linear_group_by_key(|(id, _)| *id);
 
     for (mgroup, hgroup) in matches.zip(highlights) {
+        // check if documents id are the same in these two groups
         debug_assert_eq!(mgroup[0].0, hgroup[0].0);
 
-        let document_id = mgroup[0].0;
-        let start = docs_ranges.last().map(|(_, r, _)| r.end).unwrap_or(0);
-        let end = start + mgroup.len();
+        // linear_group_by will never yield an empty array
+        // so it is safe to do so
+        let id = unsafe { mgroup.get_unchecked(0).0 };
+        let highlights = SmallVec32::from_iter(hgroup.iter().map(|(_, h)| *h));
 
-        let highlights = hgroup.iter().map(|(_, h)| *h).collect();
-        docs_ranges.push((document_id, Range { start, end }, highlights));
+        let len = mgroup.len();
+        let mut query_index = SmallVec32::with_capacity(len);
+        let mut distance = SmallVec32::with_capacity(len);
+        let mut attribute = SmallVec32::with_capacity(len);
+        let mut word_index = SmallVec32::with_capacity(len);
+        let mut is_exact = SmallVec32::with_capacity(len);
 
-        matches2.extend_from_slice(mgroup);
-    }
-
-    let matches = Arc::new(matches2);
-    docs_ranges.into_iter().map(|(id, range, highlights)| {
-        let matches = SharedMatches { range, matches: matches.clone() };
-        RawDocument::new(id, matches, highlights)
-    }).collect()
-}
-
-#[derive(Debug, Copy, Clone)]
-struct Range {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone)]
-pub struct SharedMatches {
-    range: Range,
-    matches: Arc<Matches>,
-}
-
-#[derive(Clone)]
-struct Matches {
-    query_index: Vec<u32>,
-    distance: Vec<u8>,
-    attribute: Vec<u16>,
-    word_index: Vec<u16>,
-    is_exact: Vec<bool>,
-}
-
-impl Matches {
-    fn with_capacity(cap: usize) -> Matches {
-        Matches {
-            query_index: Vec::with_capacity(cap),
-            distance: Vec::with_capacity(cap),
-            attribute: Vec::with_capacity(cap),
-            word_index: Vec::with_capacity(cap),
-            is_exact: Vec::with_capacity(cap),
+        for (_, match_) in mgroup {
+            query_index.push(match_.query_index);
+            distance.push(match_.distance);
+            attribute.push(match_.attribute);
+            word_index.push(match_.word_index);
+            is_exact.push(match_.is_exact);
         }
+
+        let document = RawDocument {
+            id,
+            query_index,
+            distance,
+            attribute,
+            word_index,
+            is_exact,
+            highlights,
+        };
+
+        documents.push(document);
     }
 
-    fn extend_from_slice(&mut self, matches: &[(DocumentId, TmpMatch)]) {
-        for (_, match_) in matches {
-            self.query_index.push(match_.query_index);
-            self.distance.push(match_.distance);
-            self.attribute.push(match_.attribute);
-            self.word_index.push(match_.word_index);
-            self.is_exact.push(match_.is_exact);
-        }
+    documents
+}
+
+pub fn permutations_unstable_by_key<F, K>(len: usize, mut f: F) -> Vec<usize>
+where F: FnMut(usize) -> K,
+      K: Ord,
+{
+    let mut permutations: Vec<usize> = (0..len).collect();
+    permutations.sort_unstable_by_key(|&i| f(i));
+    permutations
+}
+
+// this function is O(N) in term of memory but it could be O(1)
+// by following this blog post
+// https://devblogs.microsoft.com/oldnewthing/20170102-00/?p=95095
+pub fn apply_permutations<T: Clone>(permutations: &[usize], vec: &mut SmallVec32<T>) {
+    debug_assert_eq!(permutations.len(), vec.len());
+
+    // it is not necessary to restrict items to be Clone,
+    // we could ptr::read and, after having copied everything,
+    // set_len to 0 and drop the "empty" vec.
+    let mut new = SmallVec32::with_capacity(permutations.len());
+    for &i in permutations {
+        new.push(vec[i].clone());
     }
+    std::mem::replace(vec, new);
 }

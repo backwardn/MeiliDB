@@ -12,6 +12,10 @@ fn number_of_query_words(query_index: &[u32]) -> usize {
 pub struct NumberOfWords;
 
 impl Criterion for NumberOfWords {
+    fn prepare(&self, document: &mut RawDocument) {
+        // unimplemented!()
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

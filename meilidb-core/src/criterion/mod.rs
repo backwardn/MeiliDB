@@ -20,6 +20,8 @@ pub use self::{
 };
 
 pub trait Criterion: Send + Sync {
+    fn prepare(&self, document: &mut RawDocument);
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering;
 
     fn name(&self) -> &'static str;
@@ -31,6 +33,10 @@ pub trait Criterion: Send + Sync {
 }
 
 impl<'a, T: Criterion + ?Sized + Send + Sync> Criterion for &'a T {
+    fn prepare(&self, document: &mut RawDocument) {
+        (**self).prepare(document)
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         (**self).evaluate(lhs, rhs)
     }
@@ -45,6 +51,10 @@ impl<'a, T: Criterion + ?Sized + Send + Sync> Criterion for &'a T {
 }
 
 impl<T: Criterion + ?Sized> Criterion for Box<T> {
+    fn prepare(&self, document: &mut RawDocument) {
+        (**self).prepare(document)
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         (**self).evaluate(lhs, rhs)
     }

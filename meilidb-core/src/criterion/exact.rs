@@ -21,6 +21,10 @@ fn number_exact_matches(query_index: &[u32], is_exact: &[bool]) -> usize {
 pub struct Exact;
 
 impl Criterion for Exact {
+    fn prepare(&self, document: &mut RawDocument) {
+        // unimplemented!()
+    }
+
     fn evaluate(&self, lhs: &RawDocument, rhs: &RawDocument) -> Ordering {
         let lhs = {
             let query_index = lhs.query_index();

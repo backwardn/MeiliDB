@@ -10,6 +10,7 @@ use levenshtein_automata::DFA;
 use log::info;
 use meilidb_tokenizer::{is_cjk, split_query_string};
 use rayon::slice::ParallelSliceMut;
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use sdset::SetBuf;
 use slice_group_by::{GroupBy, GroupByMut};
 
@@ -305,10 +306,14 @@ impl<'c, S, FI> QueryBuilder<'c, S, FI>
 where S: Store,
 {
     fn query_all(&self, query: &str) -> Result<Vec<RawDocument>, S::Error> {
+        let start = Instant::now();
         let (automatons, query_enhancer) = generate_automatons(query, &self.store)?;
+        info!("generating automatons took {:.2?} ({} automatons)", start.elapsed(), automatons.len());
+
         let words = self.store.words()?.as_fst();
         let searchables = self.searchable_attrs.as_ref();
 
+        let start = Instant::now();
         let mut stream = {
             let mut op_builder = fst::raw::OpBuilder::new();
             for Automaton { dfa, .. } in &automatons {
@@ -317,6 +322,7 @@ where S: Store,
             }
             op_builder.r#union()
         };
+        info!("creating stream took {:.2?}", start.elapsed());
 
         let mut matches = Vec::new();
         let mut highlights = Vec::new();
@@ -379,7 +385,7 @@ where S: Store,
         info!("{} total matches to classify", matches.len());
 
         let start = Instant::now();
-        let raw_documents = raw_documents_from(matches, highlights);
+        let raw_documents = raw_documents_from(matches.to_vec(), highlights.to_vec());
         info!("making raw documents took {:.2?}", start.elapsed());
 
         info!("{} total documents to classify", raw_documents.len());
@@ -407,17 +413,21 @@ where S: Store,
         let mut groups = vec![documents.as_mut_slice()];
 
         'criteria: for criterion in self.criteria.as_ref() {
-            let tmp_groups = mem::replace(&mut groups, Vec::new());
+            let consumed_groups = mem::replace(&mut groups, Vec::new());
             let mut documents_seen = 0;
 
-            for group in tmp_groups {
-                // if this group does not overlap with the requested range,
+            for group in consumed_groups {
+                // if this group do not overlap with the requested range,
                 // push it without sorting and splitting it
                 if documents_seen + group.len() < range.start {
                     documents_seen += group.len();
                     groups.push(group);
                     continue;
                 }
+
+                let start = Instant::now();
+                group.par_iter_mut().for_each(|d| criterion.prepare(d));
+                info!("criterion {} preparation took {:.2?}", criterion.name(), start.elapsed());
 
                 let start = Instant::now();
                 group.par_sort_unstable_by(|a, b| criterion.evaluate(a, b));
