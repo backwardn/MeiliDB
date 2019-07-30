@@ -10,6 +10,7 @@ use levenshtein_automata::DFA;
 use log::info;
 use meilidb_tokenizer::{is_cjk, split_query_string};
 use rayon::slice::ParallelSliceMut;
+use rayon::iter::{IntoParallelRefIterator, IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use sdset::SetBuf;
 use slice_group_by::{GroupBy, GroupByMut};
 
@@ -318,25 +319,27 @@ where S: Store,
             op_builder.r#union()
         };
 
-        let mut matches = Vec::new();
-        let mut highlights = Vec::new();
+        let num_shards = rayon::current_num_threads();
+        let mut shards = vec![(Vec::new(), Vec::new()); num_shards];
+        info!("sharding in {} parts", num_shards);
 
         let mut query_db = std::time::Duration::default();
 
         let start = Instant::now();
         while let Some((input, indexed_values)) = stream.next() {
+
+            let start = Instant::now();
+            let doc_indexes = self.store.word_indexes(input)?;
+            let doc_indexes = match doc_indexes {
+                Some(doc_indexes) => doc_indexes,
+                None => continue,
+            };
+            query_db += start.elapsed();
+
             for iv in indexed_values {
                 let Automaton { is_exact, query_len, ref dfa } = automatons[iv.index];
                 let distance = dfa.eval(input).to_u8();
                 let is_exact = is_exact && distance == 0 && input.len() == query_len;
-
-                let start = Instant::now();
-                let doc_indexes = self.store.word_indexes(input)?;
-                let doc_indexes = match doc_indexes {
-                    Some(doc_indexes) => doc_indexes,
-                    None => continue,
-                };
-                query_db += start.elapsed();
 
                 for di in doc_indexes.as_slice() {
                     let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
@@ -355,6 +358,9 @@ where S: Store,
                             char_length: di.char_length,
                         };
 
+                        let shard = (di.document_id.0 as usize) % num_shards;
+                        let (matches, highlights) = &mut shards[shard];
+
                         matches.push((di.document_id, match_));
                         highlights.push((di.document_id, highlight));
                     }
@@ -363,25 +369,37 @@ where S: Store,
         }
         info!("main query all took {:.2?} (get indexes {:.2?})", start.elapsed(), query_db);
 
-        info!("{} total matches to rewrite", matches.len());
+        let total_shards_length: usize = shards.iter().map(|(m, _)| m.len()).sum();
+        info!("total shards length is {}", total_shards_length);
 
         let start = Instant::now();
-        let matches = multiword_rewrite_matches(matches, &query_enhancer);
-        info!("multiword rewrite took {:.2?}", start.elapsed());
+        let shards: Vec<_> = shards.into_par_iter().map(|(matches, mut highlights)| {
+            info!("{} total matches to rewrite", matches.len());
 
-        let start = Instant::now();
-        let highlights = {
-            highlights.par_sort_unstable_by_key(|(id, _)| *id);
-            SetBuf::new_unchecked(highlights)
-        };
-        info!("sorting highlights took {:.2?}", start.elapsed());
+            let start = Instant::now();
+            let matches = multiword_rewrite_matches(matches, &query_enhancer);
+            info!("multiword rewrite took {:.2?}", start.elapsed());
 
-        info!("{} total matches to classify", matches.len());
+            let start = Instant::now();
+            let highlights = {
+                highlights.par_sort_unstable_by_key(|(id, _)| *id);
+                SetBuf::new_unchecked(highlights)
+            };
+            info!("sorting highlights took {:.2?}", start.elapsed());
 
-        let start = Instant::now();
-        let raw_documents = raw_documents_from(matches, highlights);
-        info!("making raw documents took {:.2?}", start.elapsed());
+            info!("{} total matches to classify", matches.len());
 
+            let start = Instant::now();
+            let raw_documents = raw_documents_from(matches, highlights);
+            info!("making raw documents took {:.2?}", start.elapsed());
+
+            raw_documents
+
+        }).collect();
+
+        info!("mapping the shards took {:.2?}", start.elapsed());
+
+        let raw_documents: Vec<_> = shards.into_iter().flatten().collect();
         info!("{} total documents to classify", raw_documents.len());
 
         Ok(raw_documents)
