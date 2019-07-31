@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use levenshtein_automata::DFA;
 use log::info;
 use meilidb_tokenizer::{is_cjk, split_query_string};
-use rayon::slice::ParallelSliceMut;
+use rayon::prelude::*;
 use sdset::SetBuf;
 use slice_group_by::{GroupBy, GroupByMut};
 
@@ -24,30 +24,38 @@ use crate::{TmpMatch, Highlight, DocumentId, Store, RawDocument, Document};
 const NGRAMS: usize = 3;
 
 struct Automaton {
+    index: usize,
+    ngram: usize,
     query_len: usize,
     is_exact: bool,
     dfa: DFA,
 }
 
 impl Automaton {
-    fn exact(query: &str) -> Automaton {
+    fn exact(index: usize, ngram: usize, query: &str) -> Automaton {
         Automaton {
+            index,
+            ngram,
             query_len: query.len(),
             is_exact: true,
             dfa: build_dfa(query),
         }
     }
 
-    fn prefix_exact(query: &str) -> Automaton {
+    fn prefix_exact(index: usize, ngram: usize, query: &str) -> Automaton {
         Automaton {
+            index,
+            ngram,
             query_len: query.len(),
             is_exact: true,
             dfa: build_prefix_dfa(query),
         }
     }
 
-    fn non_exact(query: &str) -> Automaton {
+    fn non_exact(index: usize, ngram: usize, query: &str) -> Automaton {
         Automaton {
+            index,
+            ngram,
             query_len: query.len(),
             is_exact: false,
             dfa: build_dfa(query),
@@ -73,6 +81,8 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
     let mut automatons = Vec::new();
     let mut enhancer_builder = QueryEnhancerBuilder::new(&query_words);
 
+    info!("declare originals {:?}", query_words);
+
     // We must not declare the original words to the query enhancer
     // *but* we need to push them in the automatons list first
     let mut original_words = query_words.iter().peekable();
@@ -82,9 +92,9 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
         let not_prefix_dfa = has_following_word || has_end_whitespace || word.chars().all(is_cjk);
 
         let automaton = if not_prefix_dfa {
-            Automaton::exact(word)
+            Automaton::exact(automatons.len(), 1, word)
         } else {
-            Automaton::prefix_exact(word)
+            Automaton::prefix_exact(automatons.len(), 1, word)
         };
         automatons.push(automaton);
     }
@@ -125,11 +135,13 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                         let real_query_index = automatons.len();
                         enhancer_builder.declare(query_range.clone(), real_query_index, &synonyms_words);
 
+                        info!("declare alternatives {:?}", synonyms_words);
+
                         for synonym in synonyms_words {
                             let automaton = if nb_synonym_words == 1 {
-                                Automaton::exact(synonym)
+                                Automaton::exact(automatons.len(), n, synonym)
                             } else {
-                                Automaton::non_exact(synonym)
+                                Automaton::non_exact(automatons.len(), n, synonym)
                             };
                             automatons.push(automaton);
                         }
@@ -142,14 +154,20 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                 let concat = ngram_slice.concat();
                 let normalized = normalize_str(&concat);
 
+                info!("declare concat {:?}", concat);
+
                 let real_query_index = automatons.len();
                 enhancer_builder.declare(query_range.clone(), real_query_index, &[&normalized]);
 
-                let automaton = Automaton::exact(&normalized);
+                let automaton = Automaton::exact(automatons.len(), n, &normalized);
                 automatons.push(automaton);
             }
         }
     }
+
+    use std::cmp::Reverse;
+    let original_len = query_words.len();
+    automatons[original_len..].sort_unstable_by_key(|a| (Reverse(a.is_exact), Reverse(a.ngram)));
 
     Ok((automatons, enhancer_builder.build()))
 }
@@ -302,67 +320,70 @@ fn multiword_rewrite_matches(
 }
 
 impl<'c, S, FI> QueryBuilder<'c, S, FI>
-where S: Store,
+where S: Store + Sync,
 {
     fn query_all(&self, query: &str) -> Result<Vec<RawDocument>, S::Error> {
         let (automatons, query_enhancer) = generate_automatons(query, &self.store)?;
-        let words = self.store.words()?.as_fst();
         let searchables = self.searchable_attrs.as_ref();
+        let words = self.store.words()?;
+        let store = &self.store;
 
-        let mut stream = {
-            let mut op_builder = fst::raw::OpBuilder::new();
-            for Automaton { dfa, .. } in &automatons {
-                let stream = words.search(dfa);
-                op_builder.push(stream);
-            }
-            op_builder.r#union()
-        };
+        let duration_limit = std::time::Duration::from_millis(30);
 
-        let mut matches = Vec::new();
-        let mut highlights = Vec::new();
+        let global_start = Instant::now();
+        let (mut matches, mut highlights): (Vec<_>, Vec<_>) = automatons
+            .into_iter()
+            .take_while(|_| global_start.elapsed() <= duration_limit)
+            .par_bridge()
+            .flat_map(|automaton| {
+                let Automaton { index, is_exact, query_len, ref dfa, ngram } = automaton;
+                let mut matches_highlights = Vec::new();
+                let mut stream = words.search(dfa).into_stream();
 
-        let mut query_db = std::time::Duration::default();
+                while let Some(input) = stream.next() {
 
-        let start = Instant::now();
-        while let Some((input, indexed_values)) = stream.next() {
-            for iv in indexed_values {
-                let Automaton { is_exact, query_len, ref dfa } = automatons[iv.index];
-                let distance = dfa.eval(input).to_u8();
-                let is_exact = is_exact && distance == 0 && input.len() == query_len;
+                    if global_start.elapsed() > duration_limit {
+                        return matches_highlights;
+                    }
 
-                let start = Instant::now();
-                let doc_indexes = self.store.word_indexes(input)?;
-                let doc_indexes = match doc_indexes {
-                    Some(doc_indexes) => doc_indexes,
-                    None => continue,
-                };
-                query_db += start.elapsed();
+                    let text = std::str::from_utf8(input).unwrap();
+                    info!("retrieving {:?} associated matches (is_exact {}, ngram {})", text, is_exact, ngram);
 
-                for di in doc_indexes.as_slice() {
-                    let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
-                    if let Some(attribute) = attribute {
-                        let match_ = TmpMatch {
-                            query_index: iv.index as u32,
-                            distance,
-                            attribute,
-                            word_index: di.word_index,
-                            is_exact,
-                        };
+                    let distance = dfa.eval(input).to_u8();
+                    let is_exact = is_exact && distance == 0 && input.len() == query_len;
+                    let doc_indexes = match store.word_indexes(input).unwrap() {
+                        Some(doc_indexes) => doc_indexes,
+                        None => continue,
+                    };
 
-                        let highlight = Highlight {
-                            attribute: di.attribute,
-                            char_index: di.char_index,
-                            char_length: di.char_length,
-                        };
+                    for di in doc_indexes.as_slice() {
+                        let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
+                        if let Some(attribute) = attribute {
+                            let match_ = TmpMatch {
+                                query_index: index as u32,
+                                distance,
+                                attribute,
+                                word_index: di.word_index,
+                                is_exact,
+                            };
 
-                        matches.push((di.document_id, match_));
-                        highlights.push((di.document_id, highlight));
+                            let highlight = Highlight {
+                                attribute: di.attribute,
+                                char_index: di.char_index,
+                                char_length: di.char_length,
+                            };
+
+                            let id = di.document_id;
+                            matches_highlights.push(((id, match_), (id, highlight)));
+                        }
                     }
                 }
-            }
-        }
-        info!("main query all took {:.2?} (get indexes {:.2?})", start.elapsed(), query_db);
 
+                matches_highlights
+
+            }).unzip();
+
+        info!("main query all took {:.2?}", global_start.elapsed());
         info!("{} total matches to rewrite", matches.len());
 
         let start = Instant::now();
@@ -389,7 +410,7 @@ where S: Store,
 }
 
 impl<'c, S, FI> QueryBuilder<'c, S, FI>
-where S: Store,
+where S: Store + Sync,
       FI: Fn(DocumentId) -> bool,
 {
     pub fn query(self, query: &str, range: Range<usize>) -> Result<Vec<Document>, S::Error> {
@@ -466,7 +487,7 @@ impl<'c, I, FI, FD> DistinctQueryBuilder<'c, I, FI, FD>
 }
 
 impl<'c, S, FI, FD, K> DistinctQueryBuilder<'c, S, FI, FD>
-where S: Store,
+where S: Store + Sync,
       FI: Fn(DocumentId) -> bool,
       FD: Fn(DocumentId) -> Option<K>,
       K: Hash + Eq,
