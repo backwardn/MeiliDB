@@ -680,6 +680,7 @@ mod tests {
 
     use std::collections::{BTreeSet, HashMap};
     use std::iter::FromIterator;
+    use std::sync::Arc;
 
     use sdset::SetBuf;
     use fst::{Set, IntoStreamer};
@@ -803,7 +804,8 @@ mod tests {
             ("apple",   &[doc_char_index(0, 2, 2)][..]),
         ]);
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("iphone from apple", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -825,7 +827,8 @@ mod tests {
 
         store.add_synonym("bonjour", SetBuf::from_dirty(vec!["hello"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("hello", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -836,7 +839,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("bonjour", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -857,7 +860,8 @@ mod tests {
         store.add_synonym("bonjour", SetBuf::from_dirty(vec!["hello"]));
         store.add_synonym("salut", SetBuf::from_dirty(vec!["hello"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("sal", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -868,7 +872,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("bonj", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -879,13 +883,13 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("sal blabla", 0..20).unwrap();
         let mut iter = results.into_iter();
 
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("bonj blabla", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -900,7 +904,8 @@ mod tests {
 
         store.add_synonym("salutation", SetBuf::from_dirty(vec!["hello"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("salutution", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -911,7 +916,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("saluttion", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -935,7 +940,8 @@ mod tests {
         store.add_synonym("bonjour", SetBuf::from_dirty(vec!["hello", "salut"]));
         store.add_synonym("salut", SetBuf::from_dirty(vec!["hello", "bonjour"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("hello", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -956,7 +962,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("bonjour", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -977,7 +983,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("salut", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1015,7 +1021,8 @@ mod tests {
         store.add_synonym("NY",  SetBuf::from_dirty(vec!["NYC", "new york", "new york city"]));
         store.add_synonym("NYC", SetBuf::from_dirty(vec!["NY",  "new york", "new york city"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("NY subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1040,7 +1047,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("NYC subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1084,7 +1091,8 @@ mod tests {
 
         store.add_synonym("NY",  SetBuf::from_dirty(vec!["york new"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("NY", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1108,7 +1116,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("new york", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1140,7 +1148,8 @@ mod tests {
 
         store.add_synonym("new york", SetBuf::from_dirty(vec!["NY"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("NY subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1157,7 +1166,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("new york subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1197,7 +1206,8 @@ mod tests {
         store.add_synonym("NY",  SetBuf::from_dirty(vec!["NYC", "new york", "new york city"]));
         store.add_synonym("NYC", SetBuf::from_dirty(vec!["NY",  "new york", "new york city"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("NY subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1222,7 +1232,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("NYC subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1270,7 +1280,8 @@ mod tests {
         store.add_synonym("NYC", SetBuf::from_dirty(vec!["NY",  "new york", "new york city"]));
         store.add_synonym("subway", SetBuf::from_dirty(vec!["underground train"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("NY subway broken", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1298,7 +1309,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("NYC subway", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1350,7 +1361,8 @@ mod tests {
         store.add_synonym("new york city", SetBuf::from_dirty(vec![     "NYC", "NY", "new york"      ]));
         store.add_synonym("underground train", SetBuf::from_dirty(vec![ "subway"                     ]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("new york underground train broken", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1387,7 +1399,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("new york city underground train broken", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1443,7 +1455,8 @@ mod tests {
         store.add_synonym("new york", SetBuf::from_dirty(vec![      "new york city" ]));
         store.add_synonym("new york city", SetBuf::from_dirty(vec![ "new york"      ]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("new york big ", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1479,7 +1492,8 @@ mod tests {
 
         store.add_synonym("NY", SetBuf::from_dirty(vec!["new york city story"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("NY subway ", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1526,7 +1540,8 @@ mod tests {
         store.add_synonym("new york city", SetBuf::from_dirty(vec!["NYC"]));
         store.add_synonym("subway",        SetBuf::from_dirty(vec!["underground train"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("new york city long subway cool ", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1555,7 +1570,8 @@ mod tests {
 
         store.add_synonym("téléphone", SetBuf::from_dirty(vec!["iphone"]));
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("telephone", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1572,7 +1588,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store.clone());
         let results = builder.query("téléphone", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1589,7 +1605,7 @@ mod tests {
         });
         assert_matches!(iter.next(), None);
 
-        let builder = QueryBuilder::new(&store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("télephone", 0..20).unwrap();
         let mut iter = results.into_iter();
 
@@ -1614,7 +1630,8 @@ mod tests {
             ("case",    &[doc_index(0, 1)][..]),
         ]);
 
-        let builder = QueryBuilder::new(&store);
+        let store = Arc::new(store);
+        let builder = QueryBuilder::new(store);
         let results = builder.query("i phone case", 0..20).unwrap();
         let mut iter = results.into_iter();
 
