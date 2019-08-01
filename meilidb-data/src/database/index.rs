@@ -75,18 +75,18 @@ impl Index {
         })
     }
 
-    pub fn query_builder(&self) -> QueryBuilder<IndexLease> {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::new(lease)
+    pub fn query_builder(&self) -> QueryBuilder<IndexLoad> {
+        let index = IndexLoad(self.0.load());
+        QueryBuilder::new(index)
     }
 
     pub fn query_builder_with_criteria<'c>(
         &self,
         criteria: Criteria<'c>,
-    ) -> QueryBuilder<'c, IndexLease>
+    ) -> QueryBuilder<'c, IndexLoad>
     {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::with_criteria(lease, criteria)
+        let index = IndexLoad(self.0.load());
+        QueryBuilder::with_criteria(index, criteria)
     }
 
     pub fn lease_inner(&self) -> Lease<Arc<InnerIndex>> {
@@ -147,9 +147,10 @@ impl Index {
     }
 }
 
-pub struct IndexLease(Lease<Arc<InnerIndex>>);
+#[derive(Clone)]
+pub struct IndexLoad(Arc<InnerIndex>);
 
-impl Store for IndexLease {
+impl Store for IndexLoad {
     type Error = Error;
 
     fn words(&self) -> Result<&fst::Set, Self::Error> {

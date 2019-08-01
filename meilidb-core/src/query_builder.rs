@@ -347,133 +347,121 @@ fn multiword_rewrite_matches(
     SetBuf::new_unchecked(padded_matches)
 }
 
-impl<'c, S, FI> QueryBuilder<'c, S, FI>
-where S: Store + Sync,
+impl<'c, S: 'static, FI> QueryBuilder<'c, S, FI>
+where S: Store + Send + Clone,
 {
     fn query_all(&self, query: &str) -> Result<Vec<RawDocument>, S::Error> {
         let start = Instant::now();
         let (automatons, query_enhancer) = generate_automatons(query, &self.store)?;
         info!("generate {} automatons took {:.2?}", automatons.len(), start.elapsed());
 
-        let searchables = self.searchable_attrs.as_ref();
-        let words = self.store.words()?;
-        let store = &self.store;
+        let searchables = self.searchable_attrs.clone();
+        let store = self.store.clone();
 
         let duration_limit = Duration::from_millis(20);
 
         let global_start = Instant::now();
         let recv_end_time = global_start + duration_limit;
 
-        let used_automatons = std::sync::atomic::AtomicUsize::new(0);
         let mut matches = Vec::new();
         let mut highlights = Vec::new();
 
-        let ref_matches = &mut matches;
-        let ref_highlights = &mut highlights;
-        let ref_used_automatons = &used_automatons;
-
         let (sender, receiver) = crossbeam_channel::unbounded();
 
-        rayon::scope(move |s| {
-            s.spawn(move |_| {
-                automatons
-                    .into_iter()
-                    .par_bridge()
-                    .map(|automaton| {
-                        let Automaton { index, is_exact, query_len, .. } = automaton;
-                        let dfa = automaton.dfa();
-                        let mut matches_highlights = Vec::new();
-                        let mut stream = words.search(&dfa).into_stream();
+        rayon::spawn(move || {
+            let sender = sender;
+            let searchables = searchables.as_ref();
+            let store = store;
 
-                        ref_used_automatons.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            automatons
+                .into_iter()
+                .par_bridge()
+                .map_with((store, searchables), |(store, searchables), automaton| {
+                    let Automaton { index, is_exact, query_len, .. } = automaton;
+                    let dfa = automaton.dfa();
+                    let mut matches_highlights = Vec::new();
+                    let words = store.words().unwrap();
+                    let mut stream = words.search(&dfa).into_stream();
 
-                        while let Some(input) = stream.next() {
+                    while let Some(input) = stream.next() {
 
+                        let distance = dfa.eval(input).to_u8();
+                        let is_exact = is_exact && distance == 0 && input.len() == query_len;
+
+                        let start = Instant::now();
+                        let doc_indexes = match store.word_indexes(input).unwrap() {
+                            Some(doc_indexes) => doc_indexes,
+                            None => continue,
+                        };
+
+                        let elapsed = start.elapsed();
+                        if elapsed > Duration::from_millis(2) {
                             let text = std::str::from_utf8(input).unwrap();
-                            if text == "de" || text == "à" || text == "a" {
-                                continue;
-                            }
-
-                            let elapsed = global_start.elapsed();
-                            if elapsed > duration_limit {
-                                info!("abort after -y- ({:?}) {:.2?}", rayon::current_thread_index(), elapsed);
-                                return matches_highlights;
-                            }
-
-                            let distance = dfa.eval(input).to_u8();
-                            let is_exact = is_exact && distance == 0 && input.len() == query_len;
-
-                            let start = Instant::now();
-                            let doc_indexes = match store.word_indexes(input).unwrap() {
-                                Some(doc_indexes) => doc_indexes,
-                                None => continue,
-                            };
-
-                            let elapsed = start.elapsed();
-                            if elapsed > Duration::from_millis(2) {
-                                info!("WOW! ({:?}) get indexes for {:?} took {:.2?} (len {})",
-                                        rayon::current_thread_index(), text, elapsed, doc_indexes.len());
-                            }
-
-                            matches_highlights.reserve(doc_indexes.len());
-
-                            for di in doc_indexes.as_slice() {
-                                let elapsed = global_start.elapsed();
-                                if elapsed > duration_limit {
-                                    info!("abort after -x- ({:?}) {:.2?}", rayon::current_thread_index(), elapsed);
-                                    return matches_highlights;
-                                }
-
-                                let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
-                                if let Some(attribute) = attribute {
-                                    let match_ = TmpMatch {
-                                        query_index: index as u32,
-                                        distance,
-                                        attribute,
-                                        word_index: di.word_index,
-                                        is_exact,
-                                    };
-
-                                    let highlight = Highlight {
-                                        attribute: di.attribute,
-                                        char_index: di.char_index,
-                                        char_length: di.char_length,
-                                    };
-
-                                    matches_highlights.push((di.document_id, match_, highlight));
-                                }
-                            }
+                            info!("WOW! ({:?}) get indexes for {:?} took {:.2?} (len {})",
+                                    rayon::current_thread_index(), text, elapsed, doc_indexes.len());
                         }
 
-                        matches_highlights
-                    })
-                    .try_for_each_with(sender.clone(), |s, x| s.send(x));
-            });
-            s.spawn(move |_| {
-                let mut timeout = match recv_end_time.checked_duration_since(Instant::now()) {
-                    Some(timeout) => timeout,
-                    None => return,
-                };
+                        matches_highlights.reserve(doc_indexes.len());
 
-                while let Ok(matches_highlights) = receiver.recv_timeout(timeout) {
-                    ref_matches.reserve(matches_highlights.len());
-                    ref_highlights.reserve(matches_highlights.len());
+                        for di in doc_indexes.as_slice() {
+                            let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
+                            if let Some(attribute) = attribute {
+                                let match_ = TmpMatch {
+                                    query_index: index as u32,
+                                    distance,
+                                    attribute,
+                                    word_index: di.word_index,
+                                    is_exact,
+                                };
 
-                    for (id, match_, highlight) in matches_highlights {
-                        ref_matches.push((id, match_));
-                        ref_highlights.push((id, highlight));
+                                let highlight = Highlight {
+                                    attribute: di.attribute,
+                                    char_index: di.char_index,
+                                    char_length: di.char_length,
+                                };
+
+                                matches_highlights.push((di.document_id, match_, highlight));
+                            }
+                        }
                     }
 
-                    timeout = match recv_end_time.checked_duration_since(Instant::now()) {
-                        Some(timeout) => timeout,
-                        None => return,
-                    };
-                }
-            });
+                    matches_highlights
+                })
+                .try_for_each_with(sender, |s, x| s.send(x));
         });
 
+        if let Some(mut timeout) = recv_end_time.checked_duration_since(Instant::now()) {
+            while let Ok(matches_highlights) = receiver.recv_timeout(timeout) {
+                matches.reserve(matches_highlights.len());
+                highlights.reserve(matches_highlights.len());
+
+                for (id, match_, highlight) in matches_highlights {
+                    matches.push((id, match_));
+                    highlights.push((id, highlight));
+                }
+
+                timeout = match recv_end_time.checked_duration_since(Instant::now()) {
+                    Some(timeout) => timeout,
+                    None => break,
+                };
+            }
+        }
+
+        if matches.is_empty() {
+            while let Ok(matches_highlights) = receiver.recv() {
+                matches.reserve(matches_highlights.len());
+                highlights.reserve(matches_highlights.len());
+
+                for (id, match_, highlight) in matches_highlights {
+                    matches.push((id, match_));
+                    highlights.push((id, highlight));
+                }
+            }
+        }
+
+        drop(receiver);
+
         info!("main query all took {:.2?}", global_start.elapsed());
-        info!("{} real number of used automatons", used_automatons.load(std::sync::atomic::Ordering::Relaxed));
         info!("{} total matches to rewrite", matches.len());
 
         let start = Instant::now();
@@ -499,8 +487,8 @@ where S: Store + Sync,
     }
 }
 
-impl<'c, S, FI> QueryBuilder<'c, S, FI>
-where S: Store + Sync,
+impl<'c, S: 'static, FI> QueryBuilder<'c, S, FI>
+where S: Store + Send + Clone,
       FI: Fn(DocumentId) -> bool,
 {
     pub fn query(self, query: &str, range: Range<usize>) -> Result<Vec<Document>, S::Error> {
@@ -576,8 +564,8 @@ impl<'c, I, FI, FD> DistinctQueryBuilder<'c, I, FI, FD>
     }
 }
 
-impl<'c, S, FI, FD, K> DistinctQueryBuilder<'c, S, FI, FD>
-where S: Store + Sync,
+impl<'c, S: 'static, FI, FD, K> DistinctQueryBuilder<'c, S, FI, FD>
+where S: Store + Send + Clone,
       FI: Fn(DocumentId) -> bool,
       FD: Fn(DocumentId) -> Option<K>,
       K: Hash + Eq,
