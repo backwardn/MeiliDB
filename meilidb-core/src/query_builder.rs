@@ -1,7 +1,7 @@
 use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use std::{cmp, mem};
 
 use fst::{Streamer, IntoStreamer};
@@ -83,6 +83,8 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
 
     info!("declare originals {:?}", query_words);
 
+    let mut automaton_creation_duration = Duration::default();
+
     // We must not declare the original words to the query enhancer
     // *but* we need to push them in the automatons list first
     let mut original_words = query_words.iter().peekable();
@@ -91,11 +93,13 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
         let has_following_word = original_words.peek().is_some();
         let not_prefix_dfa = has_following_word || has_end_whitespace || word.chars().all(is_cjk);
 
+        let start = Instant::now();
         let automaton = if not_prefix_dfa {
             Automaton::exact(automatons.len(), 1, word)
         } else {
             Automaton::prefix_exact(automatons.len(), 1, word)
         };
+        automaton_creation_duration += start.elapsed();
         automatons.push(automaton);
     }
 
@@ -138,11 +142,13 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                         info!("declare alternatives {:?}", synonyms_words);
 
                         for synonym in synonyms_words {
+                            let start = Instant::now();
                             let automaton = if nb_synonym_words == 1 {
                                 Automaton::exact(automatons.len(), n, synonym)
                             } else {
                                 Automaton::non_exact(automatons.len(), n, synonym)
                             };
+                            automaton_creation_duration += start.elapsed();
                             automatons.push(automaton);
                         }
                     }
@@ -159,11 +165,15 @@ fn generate_automatons<S: Store>(query: &str, store: &S) -> Result<(Vec<Automato
                 let real_query_index = automatons.len();
                 enhancer_builder.declare(query_range.clone(), real_query_index, &[&normalized]);
 
+                let start = Instant::now();
                 let automaton = Automaton::exact(automatons.len(), n, &normalized);
+                automaton_creation_duration += start.elapsed();
                 automatons.push(automaton);
             }
         }
     }
+
+    info!("automaton creation took {:.2?}", automaton_creation_duration);
 
     use std::cmp::Reverse;
     let original_len = query_words.len();
@@ -230,6 +240,12 @@ fn multiword_rewrite_matches(
     let start = Instant::now();
     // for each attribute of each document
     for same_document_attribute in matches.linear_group_by_key(|(id, m)| (*id, m.attribute)) {
+
+        let elapsed = start.elapsed();
+        if elapsed > Duration::from_millis(10) {
+            info!("abort multiword rewrite after {:.2?}", elapsed);
+            break;
+        }
 
         // padding will only be applied
         // to word indices in the same attribute
@@ -323,65 +339,121 @@ impl<'c, S, FI> QueryBuilder<'c, S, FI>
 where S: Store + Sync,
 {
     fn query_all(&self, query: &str) -> Result<Vec<RawDocument>, S::Error> {
+        let start = Instant::now();
         let (automatons, query_enhancer) = generate_automatons(query, &self.store)?;
+        info!("generate {} automatons took {:.2?}", automatons.len(), start.elapsed());
+
         let searchables = self.searchable_attrs.as_ref();
         let words = self.store.words()?;
         let store = &self.store;
 
-        let duration_limit = std::time::Duration::from_millis(30);
+        let duration_limit = Duration::from_millis(20);
 
         let global_start = Instant::now();
-        let (mut matches, mut highlights): (Vec<_>, Vec<_>) = automatons
-            .into_iter()
-            .take_while(|_| global_start.elapsed() <= duration_limit)
-            .par_bridge()
-            .flat_map(|automaton| {
-                let Automaton { index, is_exact, query_len, ref dfa, ngram } = automaton;
-                let mut matches_highlights = Vec::new();
-                let mut stream = words.search(dfa).into_stream();
+        let recv_end_time = global_start + duration_limit;
 
-                while let Some(input) = stream.next() {
+        let mut matches = Vec::new();
+        let mut highlights = Vec::new();
 
-                    if global_start.elapsed() > duration_limit {
-                        return matches_highlights;
-                    }
+        let ref_matches = &mut matches;
+        let ref_highlights = &mut highlights;
 
-                    let text = std::str::from_utf8(input).unwrap();
-                    info!("retrieving {:?} associated matches (is_exact {}, ngram {})", text, is_exact, ngram);
+        let (sender, receiver) = crossbeam_channel::unbounded();
 
-                    let distance = dfa.eval(input).to_u8();
-                    let is_exact = is_exact && distance == 0 && input.len() == query_len;
-                    let doc_indexes = match store.word_indexes(input).unwrap() {
-                        Some(doc_indexes) => doc_indexes,
-                        None => continue,
-                    };
+        rayon::scope(move |s| {
+            s.spawn(move |_| {
+                automatons
+                    .into_iter()
+                    .par_bridge()
+                    .map(|automaton| {
+                        let Automaton { index, is_exact, query_len, ref dfa, .. } = automaton;
+                        let mut matches_highlights = Vec::new();
+                        let mut stream = words.search(dfa).into_stream();
 
-                    for di in doc_indexes.as_slice() {
-                        let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
-                        if let Some(attribute) = attribute {
-                            let match_ = TmpMatch {
-                                query_index: index as u32,
-                                distance,
-                                attribute,
-                                word_index: di.word_index,
-                                is_exact,
+                        while let Some(input) = stream.next() {
+
+                            let text = std::str::from_utf8(input).unwrap();
+                            if text == "de" || text == "à" || text == "a" {
+                                continue;
+                            }
+
+                            let elapsed = global_start.elapsed();
+                            if elapsed > duration_limit {
+                                info!("abort after -y- ({:?}) {:.2?}", rayon::current_thread_index(), elapsed);
+                                return matches_highlights;
+                            }
+
+                            let distance = dfa.eval(input).to_u8();
+                            let is_exact = is_exact && distance == 0 && input.len() == query_len;
+
+                            let start = Instant::now();
+                            let doc_indexes = match store.word_indexes(input).unwrap() {
+                                Some(doc_indexes) => doc_indexes,
+                                None => continue,
                             };
 
-                            let highlight = Highlight {
-                                attribute: di.attribute,
-                                char_index: di.char_index,
-                                char_length: di.char_length,
-                            };
+                            let elapsed = start.elapsed();
+                            if elapsed > Duration::from_millis(2) {
+                                info!("WOW! ({:?}) get indexes for {:?} took {:.2?} (len {})",
+                                        rayon::current_thread_index(), text, elapsed, doc_indexes.len());
+                            }
 
-                            let id = di.document_id;
-                            matches_highlights.push(((id, match_), (id, highlight)));
+                            matches_highlights.reserve(doc_indexes.len());
+
+                            for di in doc_indexes.as_slice() {
+                                let elapsed = global_start.elapsed();
+                                if elapsed > duration_limit {
+                                    info!("abort after -x- ({:?}) {:.2?}", rayon::current_thread_index(), elapsed);
+                                    return matches_highlights;
+                                }
+
+                                let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
+                                if let Some(attribute) = attribute {
+                                    let match_ = TmpMatch {
+                                        query_index: index as u32,
+                                        distance,
+                                        attribute,
+                                        word_index: di.word_index,
+                                        is_exact,
+                                    };
+
+                                    let highlight = Highlight {
+                                        attribute: di.attribute,
+                                        char_index: di.char_index,
+                                        char_length: di.char_length,
+                                    };
+
+                                    matches_highlights.push((di.document_id, match_, highlight));
+                                }
+                            }
                         }
+
+                        matches_highlights
+                    })
+                    .try_for_each_with(sender.clone(), |s, x| s.send(x));
+            });
+            s.spawn(move |_| {
+                let mut timeout = match recv_end_time.checked_duration_since(Instant::now()) {
+                    Some(timeout) => timeout,
+                    None => return,
+                };
+
+                while let Ok(matches_highlights) = receiver.recv_timeout(timeout) {
+                    ref_matches.reserve(matches_highlights.len());
+                    ref_highlights.reserve(matches_highlights.len());
+
+                    for (id, match_, highlight) in matches_highlights {
+                        ref_matches.push((id, match_));
+                        ref_highlights.push((id, highlight));
                     }
+
+                    timeout = match recv_end_time.checked_duration_since(Instant::now()) {
+                        Some(timeout) => timeout,
+                        None => return,
+                    };
                 }
-
-                matches_highlights
-
-            }).unzip();
+            });
+        });
 
         info!("main query all took {:.2?}", global_start.elapsed());
         info!("{} total matches to rewrite", matches.len());
