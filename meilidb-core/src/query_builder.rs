@@ -28,17 +28,27 @@ struct Automaton {
     ngram: usize,
     query_len: usize,
     is_exact: bool,
-    dfa: DFA,
+    is_prefix: bool,
+    query: String,
 }
 
 impl Automaton {
+    fn dfa(&self) -> DFA {
+        if self.is_prefix {
+            build_prefix_dfa(&self.query)
+        } else {
+            build_dfa(&self.query)
+        }
+    }
+
     fn exact(index: usize, ngram: usize, query: &str) -> Automaton {
         Automaton {
             index,
             ngram,
             query_len: query.len(),
             is_exact: true,
-            dfa: build_dfa(query),
+            is_prefix: false,
+            query: query.to_string(), // build_dfa(query),
         }
     }
 
@@ -48,7 +58,8 @@ impl Automaton {
             ngram,
             query_len: query.len(),
             is_exact: true,
-            dfa: build_prefix_dfa(query),
+            is_prefix: true,
+            query: query.to_string(), // build_prefix_dfa(query),
         }
     }
 
@@ -58,7 +69,8 @@ impl Automaton {
             ngram,
             query_len: query.len(),
             is_exact: false,
-            dfa: build_dfa(query),
+            is_prefix: false,
+            query: query.to_string(), // build_dfa(query),
         }
     }
 }
@@ -352,11 +364,13 @@ where S: Store + Sync,
         let global_start = Instant::now();
         let recv_end_time = global_start + duration_limit;
 
+        let used_automatons = std::sync::atomic::AtomicUsize::new(0);
         let mut matches = Vec::new();
         let mut highlights = Vec::new();
 
         let ref_matches = &mut matches;
         let ref_highlights = &mut highlights;
+        let ref_used_automatons = &used_automatons;
 
         let (sender, receiver) = crossbeam_channel::unbounded();
 
@@ -366,9 +380,12 @@ where S: Store + Sync,
                     .into_iter()
                     .par_bridge()
                     .map(|automaton| {
-                        let Automaton { index, is_exact, query_len, ref dfa, .. } = automaton;
+                        let Automaton { index, is_exact, query_len, .. } = automaton;
+                        let dfa = automaton.dfa();
                         let mut matches_highlights = Vec::new();
-                        let mut stream = words.search(dfa).into_stream();
+                        let mut stream = words.search(&dfa).into_stream();
+
+                        ref_used_automatons.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                         while let Some(input) = stream.next() {
 
@@ -456,6 +473,7 @@ where S: Store + Sync,
         });
 
         info!("main query all took {:.2?}", global_start.elapsed());
+        info!("{} real number of used automatons", used_automatons.load(std::sync::atomic::Ordering::Relaxed));
         info!("{} total matches to rewrite", matches.len());
 
         let start = Instant::now();
