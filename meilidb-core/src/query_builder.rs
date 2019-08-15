@@ -2,7 +2,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Instant, Duration};
-use std::{cmp, mem};
+use std::{cmp, mem, iter};
 
 use fst::{Streamer, IntoStreamer};
 use hashbrown::HashMap;
@@ -365,43 +365,33 @@ where S: Store + Send + Clone,
 
         let mut matches = Vec::new();
         let mut highlights = Vec::new();
-
         let (sender, receiver) = crossbeam_channel::unbounded();
 
         rayon::spawn(move || {
-            let sender = sender;
-            let searchables = searchables.as_ref();
-            let store = store;
-
             automatons
                 .into_iter()
                 .par_bridge()
-                .map_with((store, searchables), |(store, searchables), automaton| {
+                .try_for_each_with((sender, store, searchables.as_ref()), |data, automaton| {
+                    let (sender, store, searchables) = data;
                     let Automaton { index, is_exact, query_len, .. } = automaton;
                     let dfa = automaton.dfa();
-                    let mut matches_highlights = Vec::new();
                     let words = store.words().unwrap();
                     let mut stream = words.search(&dfa).into_stream();
 
-                    while let Some(input) = stream.next() {
+                    let mut matches = Vec::new();
+                    let mut highlights = Vec::new();
 
+                    while let Some(input) = stream.next() {
                         let distance = dfa.eval(input).to_u8();
                         let is_exact = is_exact && distance == 0 && input.len() == query_len;
 
-                        let start = Instant::now();
                         let doc_indexes = match store.word_indexes(input).unwrap() {
                             Some(doc_indexes) => doc_indexes,
                             None => continue,
                         };
 
-                        let elapsed = start.elapsed();
-                        if elapsed > Duration::from_millis(2) {
-                            let text = std::str::from_utf8(input).unwrap();
-                            info!("WOW! ({:?}) get indexes for {:?} took {:.2?} (len {})",
-                                    rayon::current_thread_index(), text, elapsed, doc_indexes.len());
-                        }
-
-                        matches_highlights.reserve(doc_indexes.len());
+                        matches.reserve(doc_indexes.len());
+                        highlights.reserve(doc_indexes.len());
 
                         for di in doc_indexes.as_slice() {
                             let attribute = searchables.map_or(Some(di.attribute), |r| r.get(di.attribute));
@@ -420,43 +410,26 @@ where S: Store + Send + Clone,
                                     char_length: di.char_length,
                                 };
 
-                                matches_highlights.push((di.document_id, match_, highlight));
+                                matches.push((di.document_id, match_));
+                                highlights.push((di.document_id, highlight));
                             }
                         }
                     }
 
-                    matches_highlights
-                })
-                .try_for_each_with(sender, |s, x| s.send(x));
+                    sender.send((matches, highlights))
+                });
         });
 
-        if let Some(mut timeout) = recv_end_time.checked_duration_since(Instant::now()) {
-            while let Ok(matches_highlights) = receiver.recv_timeout(timeout) {
-                matches.reserve(matches_highlights.len());
-                highlights.reserve(matches_highlights.len());
-
-                for (id, match_, highlight) in matches_highlights {
-                    matches.push((id, match_));
-                    highlights.push((id, highlight));
-                }
-
-                timeout = match recv_end_time.checked_duration_since(Instant::now()) {
-                    Some(timeout) => timeout,
-                    None => break,
-                };
+        let iter = receiver.recv().into_iter().chain(iter::from_fn(|| {
+            match recv_end_time.checked_duration_since(Instant::now()) {
+                Some(timeout) => receiver.recv_timeout(timeout).ok(),
+                None => None,
             }
-        }
+        }));
 
-        if matches.is_empty() {
-            while let Ok(matches_highlights) = receiver.recv() {
-                matches.reserve(matches_highlights.len());
-                highlights.reserve(matches_highlights.len());
-
-                for (id, match_, highlight) in matches_highlights {
-                    matches.push((id, match_));
-                    highlights.push((id, highlight));
-                }
-            }
+        for (mut rcv_matches, mut rcv_highlights) in iter {
+            matches.append(&mut rcv_matches);
+            highlights.append(&mut rcv_highlights);
         }
 
         drop(receiver);
@@ -537,7 +510,7 @@ where S: Store + Send + Clone,
 
         let offset = cmp::min(documents.len(), range.start);
         let iter = documents.into_iter().skip(offset).take(range.len());
-        Ok(iter.map(|d| Document::from_raw(d)).collect())
+        Ok(iter.map(Document::from_raw).collect())
     }
 }
 
