@@ -7,7 +7,7 @@ use std::{cmp, mem, iter};
 use fst::{Streamer, IntoStreamer};
 use hashbrown::HashMap;
 use levenshtein_automata::DFA;
-use log::info;
+use log::{info, error};
 use meilidb_tokenizer::{is_cjk, split_query_string};
 use rayon::prelude::*;
 use sdset::SetBuf;
@@ -349,6 +349,7 @@ fn multiword_rewrite_matches(
 
 impl<'c, S: 'static, FI> QueryBuilder<'c, S, FI>
 where S: Store + Send + Clone,
+      S::Error: Send,
 {
     fn query_all(&self, query: &str) -> Result<Vec<RawDocument>, S::Error> {
         let start = Instant::now();
@@ -368,14 +369,19 @@ where S: Store + Send + Clone,
         let (sender, receiver) = crossbeam_channel::unbounded();
 
         rayon::spawn(move || {
-            automatons
+            enum Error<E> {
+                SendError,
+                StoreError(E),
+            }
+
+            let result = automatons
                 .into_iter()
                 .par_bridge()
                 .try_for_each_with((sender, store, searchables.as_ref()), |data, automaton| {
                     let (sender, store, searchables) = data;
                     let Automaton { index, is_exact, query_len, .. } = automaton;
                     let dfa = automaton.dfa();
-                    let words = store.words().unwrap();
+                    let words = store.words().map_err(Error::StoreError)?;
                     let mut stream = words.search(&dfa).into_stream();
 
                     let mut matches = Vec::new();
@@ -385,7 +391,7 @@ where S: Store + Send + Clone,
                         let distance = dfa.eval(input).to_u8();
                         let is_exact = is_exact && distance == 0 && input.len() == query_len;
 
-                        let doc_indexes = match store.word_indexes(input).unwrap() {
+                        let doc_indexes = match store.word_indexes(input).map_err(Error::StoreError)? {
                             Some(doc_indexes) => doc_indexes,
                             None => continue,
                         };
@@ -416,8 +422,12 @@ where S: Store + Send + Clone,
                         }
                     }
 
-                    sender.send((matches, highlights))
+                    sender.send((matches, highlights)).map_err(|_| Error::SendError)
                 });
+
+                if let Err(Error::StoreError(e)) = result {
+                    error!("{}", e);
+                }
         });
 
         let iter = receiver.recv().into_iter().chain(iter::from_fn(|| {
@@ -462,6 +472,7 @@ where S: Store + Send + Clone,
 
 impl<'c, S: 'static, FI> QueryBuilder<'c, S, FI>
 where S: Store + Send + Clone,
+      S::Error: Send,
       FI: Fn(DocumentId) -> bool,
 {
     pub fn query(self, query: &str, range: Range<usize>) -> Result<Vec<Document>, S::Error> {
@@ -539,6 +550,7 @@ impl<'c, I, FI, FD> DistinctQueryBuilder<'c, I, FI, FD>
 
 impl<'c, S: 'static, FI, FD, K> DistinctQueryBuilder<'c, S, FI, FD>
 where S: Store + Send + Clone,
+      S::Error: Send,
       FI: Fn(DocumentId) -> bool,
       FD: Fn(DocumentId) -> Option<K>,
       K: Hash + Eq,
