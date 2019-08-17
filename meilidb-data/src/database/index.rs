@@ -2,7 +2,7 @@ use sdset::SetBuf;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, Lease};
+use arc_swap::{ArcSwap, Guard};
 use meilidb_core::criterion::Criteria;
 use meilidb_core::{DocIndex, Store, DocumentId, QueryBuilder};
 use meilidb_schema::Schema;
@@ -66,48 +66,48 @@ impl Index {
     }
 
     pub fn stats(&self) -> Result<IndexStats, rocksdb::Error> {
-        let lease = self.0.lease();
+        let guard = self.0.load();
 
         Ok(IndexStats {
-            number_of_words: lease.words.len(),
-            number_of_documents: lease.raw.documents.len()?,
-            number_attrs_in_ranked_map: lease.ranked_map.len(),
+            number_of_words: guard.words.len(),
+            number_of_documents: guard.raw.documents.len()?,
+            number_attrs_in_ranked_map: guard.ranked_map.len(),
         })
     }
 
-    pub fn query_builder(&self) -> QueryBuilder<IndexLease> {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::new(lease)
+    pub fn query_builder(&self) -> QueryBuilder<IndexGuard> {
+        let guard = IndexGuard(self.0.load_full());
+        QueryBuilder::new(guard)
     }
 
     pub fn query_builder_with_criteria<'c>(
         &self,
         criteria: Criteria<'c>,
-    ) -> QueryBuilder<'c, IndexLease>
+    ) -> QueryBuilder<'c, IndexGuard>
     {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::with_criteria(lease, criteria)
+        let guard = IndexGuard(self.0.load_full());
+        QueryBuilder::with_criteria(guard, criteria)
     }
 
-    pub fn lease_inner(&self) -> Lease<Arc<InnerIndex>> {
-        self.0.lease()
+    pub fn lease_inner(&self) -> Guard<'static, Arc<InnerIndex>> {
+        self.0.load()
     }
 
     pub fn schema(&self) -> Schema {
-        self.0.lease().schema.clone()
+        self.0.load().schema.clone()
     }
 
     pub fn custom_settings(&self) -> CustomSettings {
-        self.0.lease().raw.custom.clone()
+        self.0.load().raw.custom.clone()
     }
 
     pub fn documents_addition(&self) -> DocumentsAddition {
-        let ranked_map = self.0.lease().ranked_map.clone();
+        let ranked_map = self.0.load().ranked_map.clone();
         DocumentsAddition::new(self, ranked_map)
     }
 
     pub fn documents_deletion(&self) -> DocumentsDeletion {
-        let ranked_map = self.0.lease().ranked_map.clone();
+        let ranked_map = self.0.load().ranked_map.clone();
         DocumentsDeletion::new(self, ranked_map)
     }
 
@@ -147,9 +147,10 @@ impl Index {
     }
 }
 
-pub struct IndexLease(Lease<Arc<InnerIndex>>);
+#[derive(Clone)]
+pub struct IndexGuard(Arc<InnerIndex>);
 
-impl Store for IndexLease {
+impl Store for IndexGuard {
     type Error = Error;
 
     fn words(&self) -> Result<&fst::Set, Self::Error> {
