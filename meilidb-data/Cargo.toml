@@ -5,7 +5,7 @@ authors = ["Kerollmops <renault.cle@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-arc-swap = "0.3.11"
+arc-swap = "0.4.2"
 bincode = "1.1.4"
 deunicode = "1.0.0"
 hashbrown = { version = "0.6.0", features = ["serde"] }
@@ -16,7 +16,7 @@ ordered-float = { version = "1.0.2", features = ["serde"] }
 sdset = "0.3.2"
 serde = { version = "1.0.99", features = ["derive"] }
 siphasher = "0.3.0"
-rocksdb = { version = "0.12.3", default-features = false }
+sled = "0.25.0"
 zerocopy = "0.2.8"
 
 [dependencies.rmp-serde]

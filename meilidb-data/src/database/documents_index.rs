@@ -1,60 +1,66 @@
+use std::sync::Arc;
 use std::convert::TryInto;
+use std::ops::Bound;
 
 use meilidb_core::DocumentId;
 use meilidb_schema::SchemaAttr;
-use rocksdb::DBVector;
 
-use crate::database::raw_index::InnerRawIndex;
 use crate::document_attr_key::DocumentAttrKey;
 
+fn document_fields_range(id: DocumentId) -> (Bound<[u8; 10]>, Bound<[u8; 10]>) {
+    let start = DocumentAttrKey::new(id, SchemaAttr::min()).to_be_bytes();
+    let end   = DocumentAttrKey::new(id, SchemaAttr::max()).to_be_bytes();
+
+    (Bound::Included(start), Bound::Included(end))
+}
+
 #[derive(Clone)]
-pub struct DocumentsIndex(pub(crate) InnerRawIndex);
+pub struct DocumentsIndex(pub(crate) Arc<sled::Tree>);
 
 impl DocumentsIndex {
-    pub fn document_field(&self, id: DocumentId, attr: SchemaAttr) -> Result<Option<DBVector>, rocksdb::Error> {
+    pub fn document_field(&self, id: DocumentId, attr: SchemaAttr) -> sled::Result<Option<sled::IVec>> {
         let key = DocumentAttrKey::new(id, attr).to_be_bytes();
         self.0.get(key)
     }
 
-    pub fn set_document_field(&self, id: DocumentId, attr: SchemaAttr, value: Vec<u8>) -> Result<(), rocksdb::Error> {
+    pub fn set_document_field(&self, id: DocumentId, attr: SchemaAttr, value: Vec<u8>) -> sled::Result<()> {
         let key = DocumentAttrKey::new(id, attr).to_be_bytes();
-        self.0.set(key, value)?;
+        self.0.insert(key, value)?;
         Ok(())
     }
 
-    pub fn del_document_field(&self, id: DocumentId, attr: SchemaAttr) -> Result<(), rocksdb::Error> {
+    pub fn del_document_field(&self, id: DocumentId, attr: SchemaAttr) -> sled::Result<()> {
         let key = DocumentAttrKey::new(id, attr).to_be_bytes();
-        self.0.delete(key)?;
+        self.0.remove(key)?;
         Ok(())
     }
 
-    pub fn del_all_document_fields(&self, id: DocumentId) -> Result<(), rocksdb::Error> {
-        let start = DocumentAttrKey::new(id, SchemaAttr::min()).to_be_bytes();
-        let end = DocumentAttrKey::new(id, SchemaAttr::max()).to_be_bytes();
-        self.0.delete_range(start, end)?;
+    pub fn del_all_document_fields(&self, id: DocumentId) -> sled::Result<()> {
+        let range = document_fields_range(id);
+
+        for result in self.0.range(range) {
+            let (key, _) = result?;
+            self.0.remove(key)?;
+        }
+
         Ok(())
     }
 
     pub fn document_fields(&self, id: DocumentId) -> DocumentFieldsIter {
-        let start = DocumentAttrKey::new(id, SchemaAttr::min()).to_be_bytes();
-        let end = DocumentAttrKey::new(id, SchemaAttr::max()).to_be_bytes();
+        let range = document_fields_range(id);
 
-        let from = rocksdb::IteratorMode::From(&start[..], rocksdb::Direction::Forward);
-        let iter = self.0.iterator(from).unwrap();
-
-        DocumentFieldsIter(iter, end.to_vec())
+        let iter = self.0.range(range);
+        DocumentFieldsIter(iter)
     }
 
-    pub fn len(&self) -> Result<usize, rocksdb::Error> {
+    pub fn len(&self) -> sled::Result<usize> {
         let mut last_document_id = None;
         let mut count = 0;
 
-        let from = rocksdb::IteratorMode::Start;
-        let iterator = self.0.iterator(from)?;
-
-        for (key, _) in iterator {
-            let slice = key.as_ref().try_into().unwrap();
-            let document_id = DocumentAttrKey::from_be_bytes(slice).document_id;
+        for result in self.0.iter() {
+            let (key, _) = result?;
+            let array = key.as_ref().try_into().unwrap();
+            let document_id = DocumentAttrKey::from_be_bytes(array).document_id;
 
             if Some(document_id) != last_document_id {
                 last_document_id = Some(document_id);
@@ -66,24 +72,19 @@ impl DocumentsIndex {
     }
 }
 
-pub struct DocumentFieldsIter<'a>(rocksdb::DBIterator<'a>, Vec<u8>);
+pub struct DocumentFieldsIter<'a>(sled::Iter<'a>);
 
-impl<'a> Iterator for DocumentFieldsIter<'a> {
-    type Item = Result<(SchemaAttr, Box<[u8]>), rocksdb::Error>;
+impl Iterator for DocumentFieldsIter<'_> {
+    type Item = sled::Result<(SchemaAttr, sled::IVec)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.0.next() {
-            Some((key, value)) => {
-
-                if key.as_ref() > self.1.as_ref() {
-                    return None;
-                }
-
-                let slice: &[u8] = key.as_ref();
-                let array = slice.try_into().unwrap();
+            Some(Ok((key, value))) => {
+                let array = key.as_ref().try_into().unwrap();
                 let key = DocumentAttrKey::from_be_bytes(array);
                 Some(Ok((key.attribute, value)))
             },
+            Some(Err(e)) => return Some(Err(e)),
             None => None,
         }
     }

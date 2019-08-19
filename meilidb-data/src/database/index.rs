@@ -1,20 +1,28 @@
-use sdset::SetBuf;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, Lease};
+use arc_swap::{ArcSwap, Guard};
 use meilidb_core::criterion::Criteria;
 use meilidb_core::{DocIndex, Store, DocumentId, QueryBuilder};
 use meilidb_schema::Schema;
-use rmp_serde::decode::Error as RmpError;
+use sdset::SetBuf;
 use serde::de;
 
 use crate::ranked_map::RankedMap;
-use crate::serde::Deserializer;
+use crate::serde::{Deserializer, DeserializerError};
 
-use super::{Error, CustomSettings};
+use super::Error;
+
 use super::{
-    RawIndex,
+    MainIndex,
+    SynonymsIndex,
+    WordsIndex,
+    DocsWordsIndex,
+    DocumentsIndex,
+    CustomSettingsIndex,
+};
+
+use super::{
     DocumentsAddition, DocumentsDeletion,
     SynonymsAddition, SynonymsDeletion,
 };
@@ -27,87 +35,162 @@ pub struct IndexStats {
 }
 
 #[derive(Clone)]
-pub struct Index(pub ArcSwap<InnerIndex>);
+pub struct Index {
+    pub(crate) cache: ArcSwap<Cache>,
 
-pub struct InnerIndex {
+    // TODO this will be a snapshot in the future
+    main_index: MainIndex,
+    synonyms_index: SynonymsIndex,
+    words_index: WordsIndex,
+    docs_words_index: DocsWordsIndex,
+    documents_index: DocumentsIndex,
+    custom_settings_index: CustomSettingsIndex,
+}
+
+pub(crate) struct Cache {
     pub words: fst::Set,
     pub synonyms: fst::Set,
     pub schema: Schema,
     pub ranked_map: RankedMap,
-    pub raw: RawIndex, // TODO this will be a snapshot in the future
 }
 
 impl Index {
-    pub fn from_raw(raw: RawIndex) -> Result<Index, Error> {
-        let words = match raw.main.words_set()? {
+    pub fn new(db: &sled::Db, name: &str) -> Result<Index, Error> {
+        let main_index = db.open_tree(name).map(MainIndex)?;
+        let synonyms_index = db.open_tree(format!("{}-synonyms", name)).map(SynonymsIndex)?;
+        let words_index = db.open_tree(format!("{}-words", name)).map(WordsIndex)?;
+        let docs_words_index = db.open_tree(format!("{}-docs-words", name)).map(DocsWordsIndex)?;
+        let documents_index = db.open_tree(format!("{}-documents", name)).map(DocumentsIndex)?;
+        let custom_settings_index = db.open_tree(format!("{}-custom", name)).map(CustomSettingsIndex)?;
+
+        let words = match main_index.words_set()? {
             Some(words) => words,
             None => fst::Set::default(),
         };
 
-        let synonyms = match raw.main.synonyms_set()? {
+        let synonyms = match main_index.synonyms_set()? {
             Some(synonyms) => synonyms,
             None => fst::Set::default(),
         };
 
-        let schema = match raw.main.schema()? {
+        let schema = match main_index.schema()? {
             Some(schema) => schema,
             None => return Err(Error::SchemaMissing),
         };
 
-        let ranked_map = match raw.main.ranked_map()? {
+        let ranked_map = match main_index.ranked_map()? {
             Some(map) => map,
             None => RankedMap::default(),
         };
 
-        let inner = InnerIndex { words, synonyms, schema, ranked_map, raw };
-        let index = Index(ArcSwap::new(Arc::new(inner)));
+        let cache = Cache { words, synonyms, schema, ranked_map };
+        let cache = ArcSwap::from_pointee(cache);
 
-        Ok(index)
-    }
-
-    pub fn stats(&self) -> Result<IndexStats, rocksdb::Error> {
-        let lease = self.0.lease();
-
-        Ok(IndexStats {
-            number_of_words: lease.words.len(),
-            number_of_documents: lease.raw.documents.len()?,
-            number_attrs_in_ranked_map: lease.ranked_map.len(),
+        Ok(Index {
+            cache,
+            main_index,
+            synonyms_index,
+            words_index,
+            docs_words_index,
+            documents_index,
+            custom_settings_index,
         })
     }
 
-    pub fn query_builder(&self) -> QueryBuilder<IndexLease> {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::new(lease)
+    pub fn with_schema(db: &sled::Db, name: &str, schema: Schema) -> Result<Index, Error> {
+        let main_index = db.open_tree(name).map(MainIndex)?;
+        let synonyms_index = db.open_tree(format!("{}-synonyms", name)).map(SynonymsIndex)?;
+        let words_index = db.open_tree(format!("{}-words", name)).map(WordsIndex)?;
+        let docs_words_index = db.open_tree(format!("{}-docs-words", name)).map(DocsWordsIndex)?;
+        let documents_index = db.open_tree(format!("{}-documents", name)).map(DocumentsIndex)?;
+        let custom_settings_index = db.open_tree(format!("{}-custom", name)).map(CustomSettingsIndex)?;
+
+        let words = match main_index.words_set()? {
+            Some(words) => words,
+            None => fst::Set::default(),
+        };
+
+        let synonyms = match main_index.synonyms_set()? {
+            Some(synonyms) => synonyms,
+            None => fst::Set::default(),
+        };
+
+        match main_index.schema()? {
+            Some(current) => if current != schema {
+                return Err(Error::SchemaDiffer)
+            },
+            None => main_index.set_schema(&schema)?,
+        }
+
+        let ranked_map = match main_index.ranked_map()? {
+            Some(map) => map,
+            None => RankedMap::default(),
+        };
+
+        let cache = Cache { words, synonyms, schema, ranked_map };
+        let cache = ArcSwap::from_pointee(cache);
+
+        Ok(Index {
+            cache,
+            main_index,
+            synonyms_index,
+            words_index,
+            docs_words_index,
+            documents_index,
+            custom_settings_index,
+        })
+    }
+
+    pub fn stats(&self) -> sled::Result<IndexStats> {
+        let cache = self.cache.load();
+        Ok(IndexStats {
+            number_of_words: cache.words.len(),
+            number_of_documents: self.documents_index.len()?,
+            number_attrs_in_ranked_map: cache.ranked_map.len(),
+        })
+    }
+
+    pub fn query_builder(&self) -> QueryBuilder<RefIndex> {
+        let ref_index = self.as_ref();
+        QueryBuilder::new(ref_index)
     }
 
     pub fn query_builder_with_criteria<'c>(
         &self,
         criteria: Criteria<'c>,
-    ) -> QueryBuilder<'c, IndexLease>
+    ) -> QueryBuilder<'c, RefIndex>
     {
-        let lease = IndexLease(self.0.lease());
-        QueryBuilder::with_criteria(lease, criteria)
+        let ref_index = self.as_ref();
+        QueryBuilder::with_criteria(ref_index, criteria)
     }
 
-    pub fn lease_inner(&self) -> Lease<Arc<InnerIndex>> {
-        self.0.lease()
+    pub fn as_ref(&self) -> RefIndex {
+        RefIndex {
+            cache: self.cache.load(),
+            main_index: &self.main_index,
+            synonyms_index: &self.synonyms_index,
+            words_index: &self.words_index,
+            docs_words_index: &self.docs_words_index,
+            documents_index: &self.documents_index,
+            custom_settings_index: &self.custom_settings_index,
+        }
     }
 
     pub fn schema(&self) -> Schema {
-        self.0.lease().schema.clone()
+        self.cache.load().schema.clone()
     }
 
-    pub fn custom_settings(&self) -> CustomSettings {
-        self.0.lease().raw.custom.clone()
+    pub fn custom_settings(&self) -> CustomSettingsIndex {
+        self.custom_settings_index.clone()
     }
 
     pub fn documents_addition(&self) -> DocumentsAddition {
-        let ranked_map = self.0.lease().ranked_map.clone();
+        let ranked_map = self.cache.load().ranked_map.clone();
         DocumentsAddition::new(self, ranked_map)
     }
 
     pub fn documents_deletion(&self) -> DocumentsDeletion {
-        let ranked_map = self.0.lease().ranked_map.clone();
+        let ranked_map = self.cache.load().ranked_map.clone();
         DocumentsDeletion::new(self, ranked_map)
     }
 
@@ -123,17 +206,14 @@ impl Index {
         &self,
         fields: Option<&HashSet<&str>>,
         id: DocumentId,
-    ) -> Result<Option<T>, RmpError>
+    ) -> Result<Option<T>, DeserializerError>
     where T: de::DeserializeOwned,
     {
-        let schema = &self.lease_inner().schema;
-        let fields = fields
-            .map(|fields| {
-                fields
-                    .iter()
-                    .filter_map(|name| schema.attribute(name))
-                    .collect()
-            });
+        let schema = self.schema();
+        let fields = match fields {
+            Some(fields) => fields.into_iter().map(|name| schema.attribute(name)).collect(),
+            None => None,
+        };
 
         let mut deserializer = Deserializer {
             document_id: id,
@@ -147,24 +227,32 @@ impl Index {
     }
 }
 
-pub struct IndexLease(Lease<Arc<InnerIndex>>);
+pub struct RefIndex<'a> {
+    pub(crate) cache: Guard<'static, Arc<Cache>>,
+    pub main_index: &'a MainIndex,
+    pub synonyms_index: &'a SynonymsIndex,
+    pub words_index: &'a WordsIndex,
+    pub docs_words_index: &'a DocsWordsIndex,
+    pub documents_index: &'a DocumentsIndex,
+    pub custom_settings_index: &'a CustomSettingsIndex,
+}
 
-impl Store for IndexLease {
+impl Store for RefIndex<'_> {
     type Error = Error;
 
     fn words(&self) -> Result<&fst::Set, Self::Error> {
-        Ok(&self.0.words)
+        Ok(&self.cache.words)
     }
 
     fn word_indexes(&self, word: &[u8]) -> Result<Option<SetBuf<DocIndex>>, Self::Error> {
-        Ok(self.0.raw.words.doc_indexes(word)?)
+        Ok(self.words_index.doc_indexes(word)?)
     }
 
     fn synonyms(&self) -> Result<&fst::Set, Self::Error> {
-        Ok(&self.0.synonyms)
+        Ok(&self.cache.synonyms)
     }
 
     fn alternatives_to(&self, word: &[u8]) -> Result<Option<fst::Set>, Self::Error> {
-        Ok(self.0.raw.synonyms.alternatives_to(word)?)
+        Ok(self.synonyms_index.alternatives_to(word)?)
     }
 }
