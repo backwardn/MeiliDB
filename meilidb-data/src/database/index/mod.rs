@@ -13,19 +13,24 @@ use crate::serde::{Deserializer, DeserializerError};
 
 use super::Error;
 
-use super::{
-    MainIndex,
-    SynonymsIndex,
-    WordsIndex,
-    DocsWordsIndex,
-    DocumentsIndex,
-    CustomSettingsIndex,
-};
+use self::main_index::MainIndex;
+pub use self::custom_settings_index::CustomSettingsIndex;
+use self::docs_words_index::DocsWordsIndex;
+use self::documents_index::DocumentsIndex;
+use self::synonyms_index::SynonymsIndex;
+use self::words_index::WordsIndex;
 
 use super::{
     DocumentsAddition, DocumentsDeletion,
     SynonymsAddition, SynonymsDeletion,
 };
+
+mod main_index;
+mod custom_settings_index;
+mod docs_words_index;
+mod documents_index;
+mod synonyms_index;
+mod words_index;
 
 #[derive(Copy, Clone)]
 pub struct IndexStats {

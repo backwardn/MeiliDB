@@ -5,14 +5,7 @@ use std::sync::RwLock;
 use meilidb_schema::Schema;
 
 mod error;
-
 mod index;
-mod main_index;
-mod custom_settings_index;
-mod docs_words_index;
-mod documents_index;
-mod synonyms_index;
-mod words_index;
 
 mod documents_addition;
 mod documents_deletion;
@@ -20,14 +13,7 @@ mod synonyms_addition;
 mod synonyms_deletion;
 
 pub use self::error::Error;
-
-pub use self::index::Index;
-use self::main_index::MainIndex;
-pub use self::custom_settings_index::CustomSettingsIndex;
-use self::docs_words_index::DocsWordsIndex;
-use self::documents_index::DocumentsIndex;
-use self::synonyms_index::SynonymsIndex;
-use self::words_index::WordsIndex;
+pub use self::index::{Index, CustomSettingsIndex};
 
 use self::documents_addition::DocumentsAddition;
 use self::documents_deletion::DocumentsDeletion;
