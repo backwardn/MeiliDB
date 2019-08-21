@@ -9,6 +9,7 @@ use meilidb_core::{DocIndex, Store, DocumentId, QueryBuilder};
 use meilidb_schema::Schema;
 use sdset::SetBuf;
 use serde::{de, Serialize, Deserialize};
+use sled::Transactional;
 
 use crate::ranked_map::RankedMap;
 use crate::serde::{Deserializer, DeserializerError};
@@ -62,37 +63,45 @@ fn spawn_update_system(index: Index) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         loop {
             let subscription = index.updates_index.watch_prefix(vec![]);
-            while let Some((key, update)) = index.updates_index.pop_min().unwrap() {
-                let array_id = key.as_ref().try_into().unwrap();
-                let id = u64::from_be_bytes(array_id);
+            while let Some(result) = index.updates_index.iter().next() {
+                let (key, _) = result.unwrap();
 
-                // this is an emulation of the try block (#31436)
-                let result: Result<(), Error> = (|| {
-                    match bincode::deserialize(&update)? {
-                        UpdateOwned::DocumentsAddition(documents) => {
-                            let ranked_map = index.cache.load().ranked_map.clone();
-                            let mut addition = FinalDocumentsAddition::new(&index, ranked_map);
-                            for document in documents {
-                                addition.update_document(document)?;
-                            }
-                            addition.finalize()?;
-                        },
-                        UpdateOwned::DocumentsDeletion(_) => {
-                            // ...
-                        },
-                        UpdateOwned::SynonymsAddition(_) => {
-                            // ...
-                        },
-                        UpdateOwned::SynonymsDeletion(_) => {
-                            // ...
-                        },
-                    }
-                    Ok(())
-                })();
+                let updates = &index.updates_index;
+                let results = &index.updates_results_index;
+                (updates, results).transaction(|(updates, results)| {
+                    let update = updates.remove(&key)?.unwrap();
+                    let array_id = key.as_ref().try_into().unwrap();
+                    let id = u64::from_be_bytes(array_id);
 
-                let result = result.map_err(|e| e.to_string());
-                let value = bincode::serialize(&result).unwrap();
-                index.updates_results_index.insert(array_id, value).unwrap();
+                    // this is an emulation of the try block (#31436)
+                    let result: Result<(), Error> = (|| {
+                        match bincode::deserialize(&update)? {
+                            UpdateOwned::DocumentsAddition(documents) => {
+                                let ranked_map = index.cache.load().ranked_map.clone();
+                                let mut addition = FinalDocumentsAddition::new(&index, ranked_map);
+                                for document in documents {
+                                    addition.update_document(document)?;
+                                }
+                                addition.finalize()?;
+                            },
+                            UpdateOwned::DocumentsDeletion(_) => {
+                                // ...
+                            },
+                            UpdateOwned::SynonymsAddition(_) => {
+                                // ...
+                            },
+                            UpdateOwned::SynonymsDeletion(_) => {
+                                // ...
+                            },
+                        }
+                        Ok(())
+                    })();
+
+                    let result = result.map_err(|e| e.to_string());
+                    let value = bincode::serialize(&result).unwrap();
+                    results.insert(&array_id, value)
+                })
+                .unwrap();
             }
 
             // this subscription is just used to block
