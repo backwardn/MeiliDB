@@ -81,44 +81,29 @@ impl UpdatesIndex {
 
     pub fn push_documents_addition(&self, addition: DocumentsAddition) -> Result<u64, Error> {
         let update = bincode::serialize(&())?;
-
-        let update_id = self.db.generate_id()?;
-        let update_id_array = update_id.to_be_bytes();
-
-        self.updates.insert(update_id_array, update)?;
-
-        Ok(update_id)
+        self.raw_push_update(update)
     }
 
     pub fn push_documents_deletion(&self, deletion: DocumentsDeletion) -> Result<u64, Error> {
         let update = bincode::serialize(&())?;
-
-        let update_id = self.db.generate_id()?;
-        let update_id_array = update_id.to_be_bytes();
-
-        self.updates.insert(update_id_array, update)?;
-
-        Ok(update_id)
+        self.raw_push_update(update)
     }
 
     pub fn push_synonyms_addition(&self, addition: SynonymsAddition) -> Result<u64, Error> {
         let update = bincode::serialize(&())?;
-
-        let update_id = self.db.generate_id()?;
-        let update_id_array = update_id.to_be_bytes();
-
-        self.updates.insert(update_id_array, update)?;
-
-        Ok(update_id)
+        self.raw_push_update(update)
     }
 
     pub fn push_synonyms_deletion(&self, deletion: SynonymsDeletion) -> Result<u64, Error> {
         let update = bincode::serialize(&())?;
+        self.raw_push_update(update)
+    }
 
+    fn raw_push_update(&self, raw_update: Vec<u8>) -> Result<u64, Error> {
         let update_id = self.db.generate_id()?;
         let update_id_array = update_id.to_be_bytes();
 
-        self.updates.insert(update_id_array, update)?;
+        self.updates.insert(update_id_array, raw_update)?;
 
         Ok(update_id)
     }
