@@ -13,11 +13,12 @@ use crate::serde::{Deserializer, DeserializerError};
 
 use super::Error;
 
-use self::main_index::MainIndex;
 pub use self::custom_settings_index::CustomSettingsIndex;
 use self::docs_words_index::DocsWordsIndex;
 use self::documents_index::DocumentsIndex;
+use self::main_index::MainIndex;
 use self::synonyms_index::SynonymsIndex;
+use self::updates_index::UpdatesIndex;
 use self::words_index::WordsIndex;
 
 use super::{
@@ -25,11 +26,12 @@ use super::{
     SynonymsAddition, SynonymsDeletion,
 };
 
-mod main_index;
 mod custom_settings_index;
 mod docs_words_index;
 mod documents_index;
+mod main_index;
 mod synonyms_index;
+mod updates_index;
 mod words_index;
 
 #[derive(Copy, Clone)]
@@ -67,6 +69,7 @@ impl Index {
         let docs_words_index = db.open_tree(format!("{}-docs-words", name)).map(DocsWordsIndex)?;
         let documents_index = db.open_tree(format!("{}-documents", name)).map(DocumentsIndex)?;
         let custom_settings_index = db.open_tree(format!("{}-custom", name)).map(CustomSettingsIndex)?;
+        let updates_index = db.open_tree(format!("{}-updates", name)).map(|tree| UpdatesIndex::new(db.clone(), tree))?;
 
         let words = match main_index.words_set()? {
             Some(words) => words,
