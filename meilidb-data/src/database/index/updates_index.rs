@@ -1,8 +1,12 @@
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::thread;
 
+use log::info;
 use sled::Event;
+use serde::{Serialize, Deserialize};
 
+use super::Error;
 use crate::database::{
     DocumentsAddition, DocumentsDeletion, SynonymsAddition, SynonymsDeletion
 };
@@ -12,6 +16,14 @@ fn event_is_set(event: &Event) -> bool {
         Event::Set(_, _) => true,
         _ => false,
     }
+}
+
+#[derive(Serialize, Deserialize)]
+enum Update {
+    DocumentsAddition( () /*DocumentsAddition*/),
+    DocumentsDeletion( () /*DocumentsDeletion*/),
+    SynonymsAddition( () /*SynonymsAddition*/),
+    SynonymsDeletion( () /*SynonymsDeletion*/),
 }
 
 #[derive(Clone)]
@@ -27,8 +39,28 @@ impl UpdatesIndex {
             loop {
                 let mut subscription = tree_clone.watch_prefix(vec![]);
 
-                while let Some((id, update)) = tree_clone.pop_min().unwrap() {
-                    // ...
+                while let Some((key, update)) = tree_clone.pop_min().unwrap() {
+                    let array = key.as_ref().try_into().unwrap();
+                    let id = u64::from_be_bytes(array);
+
+                    match bincode::deserialize(&update).unwrap() {
+                        Update::DocumentsAddition(_) => {
+                            info!("processing the document addition (update number {})", id);
+                            // ...
+                        },
+                        Update::DocumentsDeletion(_) => {
+                            info!("processing the document deletion (update number {})", id);
+                            // ...
+                        },
+                        Update::SynonymsAddition(_) => {
+                            info!("processing the synonyms addition (update number {})", id);
+                            // ...
+                        },
+                        Update::SynonymsDeletion(_) => {
+                            info!("processing the synonyms deletion (update number {})", id);
+                            // ...
+                        },
+                    }
                 }
 
                 // this subscription is just used to block
@@ -40,23 +72,47 @@ impl UpdatesIndex {
         UpdatesIndex { db, tree }
     }
 
-    pub fn push_documents_addition(&self, addition: DocumentsAddition) -> sled::Result<u64> {
+    pub fn push_documents_addition(&self, addition: DocumentsAddition) -> Result<u64, Error> {
+        let update = bincode::serialize(&())?;
+
         let update_id = self.db.generate_id()?;
-        unimplemented!()
+        let update_id_array = update_id.to_be_bytes();
+
+        self.tree.insert(update_id_array, update)?;
+
+        Ok(update_id)
     }
 
-    pub fn push_documents_deletion(&self, deletion: DocumentsDeletion) -> sled::Result<u64> {
+    pub fn push_documents_deletion(&self, deletion: DocumentsDeletion) -> Result<u64, Error> {
+        let update = bincode::serialize(&())?;
+
         let update_id = self.db.generate_id()?;
-        unimplemented!()
+        let update_id_array = update_id.to_be_bytes();
+
+        self.tree.insert(update_id_array, update)?;
+
+        Ok(update_id)
     }
 
-    pub fn push_synonyms_addition(&self, addition: SynonymsAddition) -> sled::Result<u64> {
+    pub fn push_synonyms_addition(&self, addition: SynonymsAddition) -> Result<u64, Error> {
+        let update = bincode::serialize(&())?;
+
         let update_id = self.db.generate_id()?;
-        unimplemented!()
+        let update_id_array = update_id.to_be_bytes();
+
+        self.tree.insert(update_id_array, update)?;
+
+        Ok(update_id)
     }
 
-    pub fn push_synonyms_deletion(&self, deletion: SynonymsDeletion) -> sled::Result<u64> {
+    pub fn push_synonyms_deletion(&self, deletion: SynonymsDeletion) -> Result<u64, Error> {
+        let update = bincode::serialize(&())?;
+
         let update_id = self.db.generate_id()?;
-        unimplemented!()
+        let update_id_array = update_id.to_be_bytes();
+
+        self.tree.insert(update_id_array, update)?;
+
+        Ok(update_id)
     }
 }
