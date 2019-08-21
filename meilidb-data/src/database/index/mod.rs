@@ -63,28 +63,36 @@ fn spawn_update_system(index: Index) -> thread::JoinHandle<()> {
         loop {
             let subscription = index.updates_index.watch_prefix(vec![]);
             while let Some((key, update)) = index.updates_index.pop_min().unwrap() {
-                let array = key.as_ref().try_into().unwrap();
-                let id = u64::from_be_bytes(array);
+                let array_id = key.as_ref().try_into().unwrap();
+                let id = u64::from_be_bytes(array_id);
 
-                match bincode::deserialize(&update).unwrap() {
-                    UpdateOwned::DocumentsAddition(documents) => {
-                        let ranked_map = index.cache.load().ranked_map.clone();
-                        let mut addition = FinalDocumentsAddition::new(&index, ranked_map);
-                        for document in documents {
-                            addition.update_document(document).unwrap();
-                        }
-                        addition.finalize().unwrap();
-                    },
-                    UpdateOwned::DocumentsDeletion(_) => {
-                        // ...
-                    },
-                    UpdateOwned::SynonymsAddition(_) => {
-                        // ...
-                    },
-                    UpdateOwned::SynonymsDeletion(_) => {
-                        // ...
-                    },
-                }
+                // this is an emulation of the try block (#31436)
+                let result: Result<(), Error> = (|| {
+                    match bincode::deserialize(&update)? {
+                        UpdateOwned::DocumentsAddition(documents) => {
+                            let ranked_map = index.cache.load().ranked_map.clone();
+                            let mut addition = FinalDocumentsAddition::new(&index, ranked_map);
+                            for document in documents {
+                                addition.update_document(document)?;
+                            }
+                            addition.finalize()?;
+                        },
+                        UpdateOwned::DocumentsDeletion(_) => {
+                            // ...
+                        },
+                        UpdateOwned::SynonymsAddition(_) => {
+                            // ...
+                        },
+                        UpdateOwned::SynonymsDeletion(_) => {
+                            // ...
+                        },
+                    }
+                    Ok(())
+                })();
+
+                let result = result.map_err(|e| e.to_string());
+                let value = bincode::serialize(&result).unwrap();
+                index.updates_results_index.insert(array_id, value).unwrap();
             }
 
             // this subscription is just used to block
