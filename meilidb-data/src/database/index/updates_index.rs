@@ -29,17 +29,24 @@ enum Update {
 #[derive(Clone)]
 pub struct UpdatesIndex {
     db: sled::Db,
-    tree: Arc<sled::Tree>,
+    updates: Arc<sled::Tree>,
+    results: Arc<sled::Tree>,
 }
 
 impl UpdatesIndex {
-    pub fn new(db: sled::Db, tree: Arc<sled::Tree>) -> UpdatesIndex {
-        let tree_clone = tree.clone();
+    pub fn new(
+        db: sled::Db,
+        updates: Arc<sled::Tree>,
+        results: Arc<sled::Tree>,
+    ) -> UpdatesIndex
+    {
+        let updates_clone = updates.clone();
+        let results_clone = results.clone();
         let _handle = thread::spawn(move || {
             loop {
-                let mut subscription = tree_clone.watch_prefix(vec![]);
+                let mut subscription = updates_clone.watch_prefix(vec![]);
 
-                while let Some((key, update)) = tree_clone.pop_min().unwrap() {
+                while let Some((key, update)) = updates_clone.pop_min().unwrap() {
                     let array = key.as_ref().try_into().unwrap();
                     let id = u64::from_be_bytes(array);
 
@@ -69,7 +76,7 @@ impl UpdatesIndex {
             }
         });
 
-        UpdatesIndex { db, tree }
+        UpdatesIndex { db, updates, results }
     }
 
     pub fn push_documents_addition(&self, addition: DocumentsAddition) -> Result<u64, Error> {
@@ -78,7 +85,7 @@ impl UpdatesIndex {
         let update_id = self.db.generate_id()?;
         let update_id_array = update_id.to_be_bytes();
 
-        self.tree.insert(update_id_array, update)?;
+        self.updates.insert(update_id_array, update)?;
 
         Ok(update_id)
     }
@@ -89,7 +96,7 @@ impl UpdatesIndex {
         let update_id = self.db.generate_id()?;
         let update_id_array = update_id.to_be_bytes();
 
-        self.tree.insert(update_id_array, update)?;
+        self.updates.insert(update_id_array, update)?;
 
         Ok(update_id)
     }
@@ -100,7 +107,7 @@ impl UpdatesIndex {
         let update_id = self.db.generate_id()?;
         let update_id_array = update_id.to_be_bytes();
 
-        self.tree.insert(update_id_array, update)?;
+        self.updates.insert(update_id_array, update)?;
 
         Ok(update_id)
     }
@@ -111,7 +118,7 @@ impl UpdatesIndex {
         let update_id = self.db.generate_id()?;
         let update_id_array = update_id.to_be_bytes();
 
-        self.tree.insert(update_id_array, update)?;
+        self.updates.insert(update_id_array, update)?;
 
         Ok(update_id)
     }

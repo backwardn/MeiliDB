@@ -52,6 +52,7 @@ pub struct Index {
     docs_words_index: DocsWordsIndex,
     documents_index: DocumentsIndex,
     custom_settings_index: CustomSettingsIndex,
+    updates_index: UpdatesIndex,
 }
 
 pub(crate) struct Cache {
@@ -69,7 +70,10 @@ impl Index {
         let docs_words_index = db.open_tree(format!("{}-docs-words", name)).map(DocsWordsIndex)?;
         let documents_index = db.open_tree(format!("{}-documents", name)).map(DocumentsIndex)?;
         let custom_settings_index = db.open_tree(format!("{}-custom", name)).map(CustomSettingsIndex)?;
-        let updates_index = db.open_tree(format!("{}-updates", name)).map(|tree| UpdatesIndex::new(db.clone(), tree))?;
+
+        let updates = db.open_tree(format!("{}-updates", name))?;
+        let updates_results = db.open_tree(format!("{}-updates-results", name))?;
+        let updates_index = UpdatesIndex::new(db.clone(), updates, updates_results);
 
         let words = match main_index.words_set()? {
             Some(words) => words,
@@ -102,6 +106,7 @@ impl Index {
             docs_words_index,
             documents_index,
             custom_settings_index,
+            updates_index,
         })
     }
 
@@ -112,6 +117,10 @@ impl Index {
         let docs_words_index = db.open_tree(format!("{}-docs-words", name)).map(DocsWordsIndex)?;
         let documents_index = db.open_tree(format!("{}-documents", name)).map(DocumentsIndex)?;
         let custom_settings_index = db.open_tree(format!("{}-custom", name)).map(CustomSettingsIndex)?;
+
+        let updates = db.open_tree(format!("{}-updates", name))?;
+        let updates_results = db.open_tree(format!("{}-updates-results", name))?;
+        let updates_index = UpdatesIndex::new(db.clone(), updates, updates_results);
 
         let words = match main_index.words_set()? {
             Some(words) => words,
@@ -146,6 +155,7 @@ impl Index {
             docs_words_index,
             documents_index,
             custom_settings_index,
+            updates_index,
         })
     }
 
