@@ -1,8 +1,9 @@
 use std::sync::Arc;
-use meilidb_schema::Schema;
-use crate::ranked_map::RankedMap;
 
-use super::Error;
+use meilidb_schema::Schema;
+
+use crate::ranked_map::RankedMap;
+use crate::database::Error;
 
 #[derive(Clone)]
 pub struct MainIndex(pub(crate) Arc<sled::Tree>);
