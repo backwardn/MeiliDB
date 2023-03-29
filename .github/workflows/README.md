@@ -1,4 +1,4 @@
-# GitHub actions workflow for MeiliDB
+# GitHub Actions Workflow for MeiliSearch
 
 > **Note:**
 
@@ -6,6 +6,15 @@
 
 ## Workflow
 
-- On each pull request, we are triggering `cargo test`.
-- On each commit on master, we are building the latest docker image.
-- On each tag, we are building the tagged docker image and the binaries for MacOS & Ubuntu.
+- On each pull request, we trigger `cargo test`.
+- On each tag, we build:
+    - the tagged Docker image and publish it to Docker Hub
+    - the binaries for MacOS, Ubuntu, and Windows
+    - the Debian package
+- On each stable release (`v*.*.*` tag):
+    - we build the `latest` Docker image and publish it to Docker Hub
+    - we publish the binary to Hombrew and Gemfury
+
+## Problems
+
+- We do not test on Windows because we are unable to make it work, there is a disk space problem.
